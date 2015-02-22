@@ -10,14 +10,28 @@
 
     class Mvc
     {
+        public static $pjax = false;
         public static $method;
         public static $route;
 
         public static function route()
         {
             static::$method = Request::method();
+            $pjax = isAke(Request::headers(), 'x-pjax', []);
+
+            static::$pjax = !empty($pjax);
 
             $uri = substr($_SERVER['REQUEST_URI'], 1);
+
+            if (static::$pjax) {
+                static::$method = 'GET';
+            }
+
+            if (fnmatch("*?*", $uri) && static::$pjax) {
+                $uri = str_replace('?', '/', $uri);
+                $uri = str_replace('=', '/', $uri);
+                $uri = str_replace('&', '/', $uri);
+            }
 
             if (!strlen($uri)) {
                 $controller = 'index';
@@ -99,16 +113,22 @@
 
             if (File::exists($tpl)) {
                 $i->view = new Container;
-                $i->view->partial = function ($partial) use ($i) {
-                    $tpl = APPLICATION_PATH . DS .
-                    'front' . DS . 'views' . DS . 'partials' . DS . $partial . '.phtml';
+                if (static::$pjax) {
+                    $i->view->partial = function ($partial) {
+                        return true;
+                    };
+                } else {
+                    $i->view->partial = function ($partial) use ($i) {
+                        $tpl = APPLICATION_PATH . DS .
+                        'front' . DS . 'views' . DS . 'partials' . DS . $partial . '.phtml';
 
-                    if (File::exists($tpl)) {
-                        $code = View::lng(File::read($tpl));
-                        $code = str_replace('$this', '$i->view', $code);
-                        eval('; ?>' . $code . '<?php ;');
-                    }
-                };
+                        if (File::exists($tpl)) {
+                            $code = View::lng(File::read($tpl));
+                            $code = str_replace('$this', '$i->view', $code);
+                            eval('; ?>' . $code . '<?php ;');
+                        }
+                    };
+                }
             }
 
             $methods = get_class_methods($i);
