@@ -28,7 +28,7 @@
         public static $cache = [];
 
         public function __construct($db, $table, $config = [])
-        {
+        {vd('f');
             $db                 = strtolower($db);
             $table              = strtolower($table);
 
