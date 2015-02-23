@@ -28,7 +28,7 @@
         public static $cache = [];
 
         public function __construct($db, $table, $config = [])
-        {vd('f');
+        {
             $db                 = strtolower($db);
             $table              = strtolower($table);
 
@@ -87,16 +87,6 @@
             }
 
             return $age;
-
-            // $key = 'dbredis.age.' . $this->collection;
-            // $age = $this->cache()->get($key);
-
-            // if (!strlen($age)) {
-            //     $age = strtotime('-1 day');
-            //     $this->setAge($age);
-            // }
-
-            // return $age;
         }
 
         public function age()
@@ -111,13 +101,6 @@
             $this->addAge($age);
 
             return $this;
-
-            // $key = 'dbredis.age.' . $this->collection;
-            // $age = is_null($age) ? time() : $age;
-
-            // $this->cache()->set($key, $age);
-
-            // return $this;
         }
 
         private function addAge($age)
