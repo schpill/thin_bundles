@@ -28,7 +28,7 @@
         public static $cache = [];
 
         public function __construct($db, $table, $config = [])
-        {
+        {vd('f');
             $db                 = strtolower($db);
             $table              = strtolower($table);
 
@@ -456,6 +456,7 @@
             $db = $this->getCollection();
 
             $db->remove(['id' => $id], ["justOne" => true]);
+
             $this->delTuple($id);
 
             $this->setAge();
