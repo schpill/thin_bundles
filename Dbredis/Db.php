@@ -362,7 +362,7 @@
 
             $row = $db->insert($data);
 
-            return $this;
+            return $this->model($data);
         }
 
         private function edit($id, array $data)
