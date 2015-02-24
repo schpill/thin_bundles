@@ -2994,4 +2994,10 @@
 
             return $this;
         }
+
+        public function backup()
+        {
+            $cmd = 'mongodump --db zelift -u zelift_master --password zelift2014 -o /tmp';
+            exec($cmd);
+        }
     }
