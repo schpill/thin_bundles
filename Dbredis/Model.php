@@ -623,6 +623,11 @@
             return $this->_data;
         }
 
+        public function toArray()
+        {
+            return $this->_data;
+        }
+
         public function toJson()
         {
             return json_encode($this->_data);
