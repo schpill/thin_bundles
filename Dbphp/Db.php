@@ -1,5 +1,5 @@
 <?php
-    namespace Fast;
+    namespace Dbphp;
 
     use Thin\Alias;
     use Thin\Arrays;
@@ -8,7 +8,6 @@
     use Thin\Exception;
     use Thin\Instance;
     use Thin\Inflector;
-    use Predis\Client;
 
     class Db
     {
@@ -21,14 +20,14 @@
         public $results         = [];
         public $totalResults    = 0;
 
-        private $useCache = true;
+        private $useCache = false;
 
         public static $cache = [];
 
         public function __construct($db, $table)
         {
-            $db                 = strtolower($db);
-            $table              = strtolower($table);
+            $db                 = mb_strtolower($db);
+            $table              = mb_strtolower($table);
 
             $this->db           = $db;
             $this->table        = $table;
@@ -41,12 +40,12 @@
         {
             $args   = func_get_args();
             $key    = sha1(serialize($args));
-            $has    = Instance::has('FastDb', $key);
+            $has    = Instance::has('phpDb', $key);
 
             if (true === $has) {
-                return Instance::get('FastDb', $key);
+                return Instance::get('phpDb', $key);
             } else {
-                return Instance::make('FastDb', $key, new self($db, $table));
+                return Instance::make('phpDb', $key, new self($db, $table));
             }
         }
 
@@ -60,17 +59,25 @@
             $db     = $this->db;
             $table  = $this->table;
 
-            $modelFile = APPLICATION_PATH . DS . 'models' . DS . 'Fast' . DS . 'models' . DS . Inflector::lower($db) . DS . ucfirst(Inflector::lower($table)) . '.php';
+            $modelFile = APPLICATION_PATH . DS . 'models' . DS . 'Php' . DS . 'models' . DS . Inflector::lower($db) . DS . ucfirst(Inflector::lower($table)) . '.php';
 
-            if (!is_dir(APPLICATION_PATH . DS . 'models' . DS . 'Fast' . DS . 'models' . DS . Inflector::lower($db))) {
-                File::mkdir(APPLICATION_PATH . DS . 'models' . DS . 'Fast' . DS . 'models' . DS . Inflector::lower($db));
+            if (!is_dir(APPLICATION_PATH . DS . 'models' . DS . 'Php')) {
+                File::mkdir(APPLICATION_PATH . DS . 'models' . DS . 'Php');
+            }
+
+            if (!is_dir(APPLICATION_PATH . DS . 'models' . DS . 'Php' . DS . 'models')) {
+                File::mkdir(APPLICATION_PATH . DS . 'models' . DS . 'Php' . DS . 'models');
+            }
+
+            if (!is_dir(APPLICATION_PATH . DS . 'models' . DS . 'Php' . DS . 'models' . DS . Inflector::lower($db))) {
+                File::mkdir(APPLICATION_PATH . DS . 'models' . DS . 'Php' . DS . 'models' . DS . Inflector::lower($db));
             }
 
             if (!File::exists($modelFile)) {
-                File::put($modelFile, str_replace('##class##', ucfirst(Inflector::lower($db)) . ucfirst(Inflector::lower($table)) . 'ModelFast', File::read(__DIR__ . DS . 'dbModel.tpl')));
+                File::put($modelFile, str_replace('##class##', ucfirst(Inflector::lower($db)) . ucfirst(Inflector::lower($table)) . 'ModelPhp', File::read(__DIR__ . DS . 'dbModel.tpl')));
             }
 
-            $class = '\\Thin\\' . ucfirst(Inflector::lower($db)) . ucfirst(Inflector::lower($table)) . 'ModelFast';
+            $class = '\\Thin\\' . ucfirst(Inflector::lower($db)) . ucfirst(Inflector::lower($table)) . 'ModelPhp';
 
             if (!class_exists($class)) {
                 require_once $modelFile;
@@ -84,6 +91,11 @@
         public function __destruct()
         {
             $this->reset();
+        }
+
+        private function motor()
+        {
+            return new Motor($this->collection);
         }
 
         public function getAge()
@@ -113,14 +125,14 @@
 
         private function addAge($age)
         {
-            $this->motor()->hset('ages', $this->collection, $age);
+            $this->motor()->write('age', $age);
 
             return $this;
         }
 
         private function retrieveAge()
         {
-            return $this->motor()->hget('ages', $this->collection);
+            return $this->motor()->read('age');
         }
 
         public function permute($db, $table)
@@ -145,33 +157,19 @@
         {
             $id = $data['id'];
 
-            $this->motor()->hset($this->collection . '.datas', $id, serialize($data));
+            $this->motor()->write('datas.' . $id, $data);
 
             foreach ($data as $k => $v) {
-                $this->motor()->hset($this->collection . '.fields.' . $k, $id, serialize($v));
+                $this->motor()->write('fields.' . $k . '.' . $id, $v);
             }
-        }
-
-        private function delTupleById($id)
-        {
-            $row = unserialize($this->motor()->hget($this->collection . '.datas', $id));
-
-            unset($row['id']);
-            unset($row['created_at']);
-            unset($row['updated_at']);
-            unset($row['deleted_at']);
-
-            $keyTuple = sha1($this->db . $this->table . serialize($row));
-
-            $this->delTuple($keyTuple);
         }
 
         public function delete($id)
         {
-            $datas = unserialize($this->motor()->hget($this->collection . '.datas', $id));
+            $datas = $this->motor()->read('datas.' . $id);
 
             foreach ($datas as $k => $v) {
-                $this->motor()->hdel($this->collection . '.fields.' . $k, $id);
+                $this->motor()->remove('fields.' . $k . '.' . $id);
             }
 
             unset($datas['id']);
@@ -183,7 +181,7 @@
 
             $this->delTuple($keyTuple);
 
-            $this->motor()->hdel($this->collection . '.datas', $id);
+            $this->motor()->remove('datas.' . $id);
 
             return true;
         }
@@ -194,7 +192,9 @@
                 return null;
             }
 
-            $datas = unserialize($this->motor()->hget($this->collection . '.datas', $id));
+            $datas = $this->motor()->read('datas.' . $id);
+
+            $datas = empty($datas) ? [] : $datas;
 
             return true === $object ? $this->model($datas) : $datas;
         }
@@ -277,11 +277,10 @@
                     }
 
                     if (empty($rows)) {
-                        $values = $this->motor()->hgetall($this->collection . '.fields.' . $field);
+                        $values = $this->motor()->all('fields.' . $field);
 
-                        foreach ($values as $id => $tmpValue) {
+                        foreach ($values as $id => $val) {
                             $row        = [];
-                            $val        = unserialize($tmpValue);
                             $checkValue = $this->compare($val, $operand, $value);
 
                             if ($checkValue) {
@@ -322,8 +321,10 @@
                                 $this->results = $this->merge($this->results, $rows);
                             }
 
-                            $this->cache()->set($keyData, serialize($this->results));
-                            $this->cache()->set($keyAge, time());
+                            if (true === $this->useCache) {
+                                $this->cache()->set($keyData, serialize($this->results));
+                                $this->cache()->set($keyAge, time());
+                            }
                         }
                     }
 
@@ -569,7 +570,7 @@
         public function count()
         {
             if (empty($this->wheres)) {
-                return $this->motor()->hlen($this->collection . '.datas');
+                return $this->motor()->count('datas');
             }
 
             return count($this->results);
@@ -697,9 +698,8 @@
 
         public function between($field, $min, $max)
         {
-            return $this->where([$field, '>=', $min])->where([$field, '<=', $max]);
-
-            return $this;
+            return $this->where([$field, '>=', $min])
+            ->where([$field, '<=', $max]);
         }
 
         public function firstOrNew($tab = [])
@@ -838,7 +838,7 @@
         {
             $this->results = [];
 
-            $ids = $this->motor()->hkeys($this->collection . '.datas');
+            $ids = $this->motor()->ids('datas');
 
             foreach ($ids as $id) {
                 $this->results[] = ['id' => $id];
@@ -956,7 +956,7 @@
             if (empty($this->wheres)) {
                 $this->results = [];
 
-                $ids = $this->motor()->hkeys($this->collection . '.datas');
+                $ids = $this->motor()->ids('datas');
 
                 foreach ($ids as $id) {
                     $this->results[$id] = [];
@@ -989,11 +989,9 @@
 
             foreach ($this->results as $exists => $row) {
                 if (false !== $exists) {
-                    $data = $this->motor()->hget($this->collection . '.datas', $exists);
+                    $data = $this->motor()->read('datas.' . $exists);
 
                     if ($data) {
-                        $data = unserialize($data);
-
                         if (!empty($this->selects) && false === $object) {
                             $item = [];
                             $item['id'] = $exists;
@@ -1085,7 +1083,7 @@
                         }
                     }
                 } else {
-                    $item = unserialize($this->motor()->hget($this->collection . '.datas', $sort['id']));
+                    $item = $this->motor()->read('datas.' . $sort['id']);
                     $item = $object ? $this->model($item) : $item;
                 }
 
@@ -1261,56 +1259,34 @@
 
         private function tuple($key)
         {
-            return $this->motor()->hget('tuples', $key);
+            return $this->motor()->read('tuples.' . $key);
         }
 
         private function addTuple($id, $key)
         {
-            return $this->motor()->hset('tuples', $key, (int) $id);
+            return $this->motor()->write('tuples.' . $key, (int) $id);
         }
 
         private function delTuple($key)
         {
-            return $this->motor()->hdel('tuples', $key);
+            return $this->motor()->remove('tuples.' . $key);
         }
 
         private function makeId()
         {
-            return $this->motor()->incr('ids.' . $this->collection);
-        }
+            $id = $this->motor()->read('counter');
 
-        public function motor()
-        {
-            $has = Instance::has('fastDbMotor', sha1($this->collection));
+            if ($id) {
+                $id++;
+                $this->motor()->write('counter', $id);
 
-            if (true === $has) {
-                return Instance::get('fastDbMotor', sha1($this->collection));
-            } else {
-                $instance = new Client([
-                    'host'      => 'localhost',
-                    'port'      => 6379,
-                    'database'  => 2
-                ]);
-
-                return Instance::make('fastDbMotor', sha1($this->collection), $instance);
+                return $id;
             }
-        }
 
-        public function cache()
-        {
-            $has = Instance::has('fastDbCache', sha1($this->collection));
+            $id = 1;
+            $this->motor()->write('counter', $id);
 
-            if (true === $has) {
-                return Instance::get('fastDbCache', sha1($this->collection));
-            } else {
-                $instance = new Client([
-                    'host'      => 'localhost',
-                    'port'      => 6379,
-                    'database'  => 3
-                ]);
-
-                return Instance::make('fastDbCache', sha1($this->collection), $instance);
-            }
+            return $id;
         }
 
         public function has($foreign, $condition = null)
@@ -1649,25 +1625,25 @@
                 $facade2 = ucfirst($this->table);
             }
 
-            $class = '\\Fast\\' . $facade;
+            $class = '\\Dbphp\\' . $facade;
 
             if (!class_exists($class)) {
-                $code = 'namespace Fast; class ' . $facade . ' extends Facade { public static $database = "' . $this->db . '"; public static $table = "' . $this->table . '"; }';
+                $code = 'namespace Dbphp; class ' . $facade . ' extends Facade { public static $database = "' . $this->db . '"; public static $table = "' . $this->table . '"; }';
 
                 eval($code);
 
-                Alias::facade('Dbf' . $facade, $facade, 'Fast');
+                Alias::facade('Dbp' . $facade, $facade, 'Dbphp');
             }
 
             if (false !== $facade2) {
-                $class2 = '\\Fast\\' . $facade2;
+                $class2 = '\\Dbphp\\' . $facade2;
 
                 if (!class_exists($class2)) {
-                    $code2 = 'namespace Fast; class ' . $facade2 . ' extends Facade { public static $database = "' . $this->db . '"; public static $table = "' . $this->table . '"; }';
+                    $code2 = 'namespace Dbphp; class ' . $facade2 . ' extends Facade { public static $database = "' . $this->db . '"; public static $table = "' . $this->table . '"; }';
 
                     eval($code2);
 
-                    Alias::facade('Dbf' . $facade2, $facade2, 'Fast');
+                    Alias::facade('Dbp' . $facade2, $facade2, 'Dbphp');
                 }
             }
 

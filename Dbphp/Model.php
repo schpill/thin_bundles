@@ -1,5 +1,5 @@
 <?php
-    namespace Dbredis;
+    namespace Dbphp;
 
     use Thin\Utils;
     use Thin\File;
@@ -31,7 +31,7 @@
 
         public function __construct(Db $db, $data = [])
         {
-            $this->_db  = $db;
+            $this->_db  = clone $db;
             $data       = $this->treatCast($data);
 
             $id = isAke($data, 'id', false);
@@ -51,6 +51,7 @@
             $this->_hooks();
 
             $this->_initial = $this->assoc();
+            $this->_db->reset();
         }
 
         private function treatCast($tab)
@@ -63,6 +64,8 @@
                         }
                     }
                 }
+            } else {
+                $tab = [];
             }
 
             return $tab;
@@ -450,7 +453,7 @@
                             }
                         }
 
-                        $auth = ['checkIndices', '_hooks'];
+                        $auth = ['_hooks'];
 
                         if (Arrays::in($func, $auth)) {
                             return true;
@@ -510,31 +513,6 @@
             }
 
             return $row;
-        }
-
-        public function restore()
-        {
-            $id = isAke($this->_data, 'id', false);
-
-            if (false !== $id) {
-                $hook = isAke($this->_hooks, 'beforeRestore', false);
-
-                if ($hook) {
-                    call_user_func_array($hook, [$this]);
-                }
-
-                $row = $this->_db->save($this->_data);
-
-                $hook = isAke($this->_hooks, 'afterRestore', false);
-
-                if ($hook) {
-                    call_user_func_array($hook, [$row]);
-                }
-
-                return $row;
-            }
-
-            return false;
         }
 
         public function insert()
@@ -648,11 +626,6 @@
             return $this->_data;
         }
 
-        public function toArray()
-        {
-            return $this->_data;
-        }
-
         public function toJson()
         {
             return json_encode($this->_data);
@@ -672,16 +645,6 @@
 
         public function attach($model, $attributes = [])
         {
-            if (is_array($model)) {
-                foreach ($model as $mod) {
-                    lib('pivot')->attach($this, $mod, $attributes);
-                }
-            } else {
-                lib('pivot')->attach($this, $model, $attributes);
-            }
-
-            return $this;
-
             $m = !is_array($model) ? $model : Arrays::first($model);
 
             if (!isset($this->_data['id']) || empty($m->id)) {
@@ -750,16 +713,6 @@
 
         public function detach($model)
         {
-            if (is_array($model)) {
-                foreach ($model as $mod) {
-                    lib('pivot')->detach($this, $mod);
-                }
-            } else {
-                lib('pivot')->detach($this, $model);
-            }
-
-            return $this;
-
             if (!isset($this->_data['id'])) {
                 throw new Exception("detach method requires a valid model.");
             }
@@ -854,8 +807,6 @@
 
         public function pivots($model)
         {
-            return lib('pivot')->retrieve($this, $model);
-
             if (!isset($this->_data['id'])) {
                 throw new Exception("pivots method requires a valid model.");
             }
@@ -867,8 +818,6 @@
 
         public function hasPivot($model)
         {
-            return lib('pivot')->has($this, $model);
-
             if (!isset($this->_data['id'])) {
                 throw new Exception("hasPivot method requires a valid model.");
             }

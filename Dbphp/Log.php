@@ -1,5 +1,5 @@
 <?php
-    namespace Fast;
+    namespace Dbphp;
 
     use Thin\Instance;
     use Thin\Arrays;
@@ -44,12 +44,12 @@
         public static function instance($ns)
         {
             $key    = sha1($ns);
-            $has    = Instance::has('FastDbLog', $key);
+            $has    = Instance::has('PhpDbLog', $key);
 
             if (true === $has) {
-                return Instance::get('FastDbLog', $key);
+                return Instance::get('PhpDbLog', $key);
             } else {
-                return Instance::make('FastDbLog', $key, new self($ns));
+                return Instance::make('PhpDbLog', $key, new self($ns));
             }
         }
     }

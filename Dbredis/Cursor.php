@@ -14,6 +14,7 @@
          * @var  object  $result  MongoCursor
          */
         protected $result;
+        protected $db;
 
         /**
          * Number of times to retry queries.
@@ -27,9 +28,10 @@
          *
          * @param object $result     MongoCursor
          */
-        public function __construct(MongoCursor $result)
+        public function __construct(MongoCursor $result, $db = null)
         {
             $this->result = $result;
+            $this->db = $db;
         }
 
         /**
@@ -82,6 +84,8 @@
                 $next = $document;
             }
 
+            unset($next['_id']);
+
             return $next;
         }
 
@@ -102,7 +106,7 @@
          */
         public function count()
         {
-            return $this->result->count(true);
+            return $this->result->count();
         }
 
         /**
@@ -112,7 +116,7 @@
          */
         public function toArray()
         {
-            return iterator_to_array($this->getIterator());
+            return iterator_to_array($this->result);
         }
 
         /**
@@ -180,5 +184,51 @@
                     throw $firstException;
                 }
             }
+        }
+
+        public function row($row, $object = false)
+        {
+            unset($row['_id']);
+
+            return $row;
+        }
+
+        public function fetch($object = false)
+        {
+            $cursor = $this->result;
+
+            $row = $cursor->current();
+
+            $cursor->next();
+
+            unset($row['_id']);
+
+            return $object ? $this->db->model($row) : $row;
+        }
+
+        public function model()
+        {
+            $cursor = $this->result;
+
+            $row = $cursor->current();
+
+            $cursor->next();
+
+            unset($row['_id']);
+
+            return $this->db->model($row);
+        }
+
+        public function first($object = false)
+        {
+            $cursor = $this->result;
+
+            $row = $cursor->current();
+
+            $cursor->rewind();
+
+            unset($row['_id']);
+
+            return $object ? $this->db->model($row) : $row;
         }
     }
