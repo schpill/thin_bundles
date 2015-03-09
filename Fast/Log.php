@@ -19,7 +19,7 @@
             $this->db->create([
                 'ns'        => $this->ns,
                 'date'      => date('Y-m-d H:i:s'),
-                'status'    => strtoupper($status),
+                'status'    => mb_strtoupper($status),
                 'message'   => $message
             ])->save();
 

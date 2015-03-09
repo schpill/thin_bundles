@@ -774,9 +774,9 @@
             }
 
             if (true === $object) {
-                return !empty($res) ? $this->model($res) : null;
+                return !empty($res) ? $this->model(current($res)) : null;
             } else {
-                return !empty($res) ? $res : [];
+                return !empty($res) ? current($res) : [];
             }
         }
 
@@ -789,9 +789,9 @@
             }
 
             if (true === $object) {
-                return !empty($res) ? $this->model(Arrays::last($res)) : null;
+                return !empty($res) ? $this->model(end($res)) : null;
             } else {
-                return !empty($res) ? Arrays::last($res) : [];
+                return !empty($res) ? end($res) : [];
             }
         }
 

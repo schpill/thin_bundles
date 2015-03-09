@@ -10,6 +10,7 @@
     use Thin\Instance;
     use Thin\Inflector;
     use Thin\Container;
+    use Thin\Keep;
     use MongoBinData;
     use MongoClient as MGC;
 
@@ -506,6 +507,186 @@
             );
         }
 
+        public function prepare(array $q)
+        {
+            $filter = ['$or' => [], '$and' => []];
+
+            if (!empty($q)) {
+                foreach ($q as $wh) {
+                    $addFilter = true;
+
+                    if (4 == count($wh)) {
+                        list($field, $operand, $value, $op) = $wh;
+                        $condition = [$field, $operand, $value];
+                    } elseif (3 == count($wh)) {
+                        $op = 'AND';
+                        list($field, $operand, $value) = $wh;
+                        $condition = [$field, $operand, $value];
+                    }
+
+                    if (is_string($condition)) {
+                        $condition = $this->normalizeCondition($condition);
+                    }
+
+                    if (count($condition) == 3) {
+                        list($field, $operand, $value) = $condition;
+                    } elseif (count($condition) == 1) {
+                        $operand    = '=';
+                        $field      = Arrays::first(array_keys($condition));
+                        $value      = Arrays::first(array_values($condition));
+                    }
+
+                    if (!fnmatch('*LIKE*', $operand) && !fnmatch('*IN*', $operand)) {
+                        if (fnmatch('IS*', $operand)) {
+                            if (!fnmatch('*NOT', $operand)) {
+                                $query = [$field => null];
+                            } else {
+                                $query = [$field => ['$ne' => null]];
+                            }
+                        } else {
+                            $dbOperand = $this->getDbOperand($operand);
+
+                            if (is_string($dbOperand)) {
+                                if (fnmatch('*t*', $dbOperand)) {
+                                    $value = !fnmatch('*.*', $value) && !fnmatch('*.*', $value) ? (int) $value : (float) $value;
+                                }
+
+                                $query = [$field => [$dbOperand => $value]];
+                            } else {
+                                if ('=' == $operand) {
+                                    $query = [$field => $value];
+                                } elseif ('=i' == $operand) {
+                                    $query = [$field => new \MongoRegex('/^' . $value . '$/i')];
+                                } elseif ('EXISTS' == $operand) {
+                                    if (!is_bool($value)) {
+                                        $value = 'true' ? true : false;
+                                    }
+
+                                    $query = [$field => ['$exists' => $value]];
+                                } elseif ('ALL' == $operand && is_array($value)) {
+                                    $query = [$field => ['$all' => array_values($value)]];
+                                } elseif ('SIZE' == $operand) {
+                                    $query = [$field => ['$size' => $value]];
+                                } elseif ('TYPE' == $operand) {
+                                    $query = [$field => ['$type' => $this->resolveType($value)]];
+                                } elseif ('WORD' == $operand) {
+                                    $filter['$text'] = ['$search' => $value];
+                                    $addFilter  = false;
+                                } elseif ('WORDS' == $operand) {
+                                    $filter['$text'] = ['$search' => "\"$value\""];
+                                    $addFilter  = false;
+                                } elseif ('SENTENCE' == $operand) {
+                                    $filter['$text'] = ['$search' => "\"$value\""];
+                                    $addFilter  = false;
+                                } elseif ('NOR' == $operand) {
+                                    $filter['$nor'] = $value;
+                                    $addFilter  = false;
+                                } elseif ('NOT' == $operand) {
+                                    $filter['$not'] = $value;
+                                    $addFilter  = false;
+                                } elseif ('WHERE' == $operand) {
+                                    $filter['$where'] = $value;
+                                    $addFilter  = false;
+                                } elseif ('MOD' == $operand) {
+                                    $divisor    = current($value);
+                                    $remainder  = end($value);
+                                    $query      = [$field => ['$mod' => [(int) $divisor, (int) $remainder]]];
+                                } elseif ('CENTER' == $operand) {
+                                    $longitude  = current($value);
+                                    $latitude   = $value[1];
+                                    $radius     = end($value);
+                                    $query      = [$field => ['$geoWithin' => ['$center' => [[$longitude, $latitude], $radius]]]];
+                                } elseif ('CENTERSPHERE' == $operand) {
+                                    $longitude  = current($value);
+                                    $latitude   = $value[1];
+                                    $radius     = end($value);
+                                    $query      = [$field => ['$geoWithin' => ['$centerSphere' => [[$longitude, $latitude], $radius]]]];
+                                } elseif ('BOX' == $operand) {
+                                    $left   = current($value);
+                                    $right  = end($value);
+                                    $query  = [$field => ['$geoWithin' => ['$box' => [$left, $right]]]];
+                                } elseif ('POLYGON' == $operand) {
+                                    $query  = [$field => ['$geoWithin' => ['$polygon' => $value]]];
+                                }
+                            }
+                        }
+                    } else {
+                        if (fnmatch('*LIKE*', $operand) && !fnmatch('*NOT*', $operand)) {
+                            $pattern = str_replace('%', '.*', $value);
+                            $query = [$field => new \MongoRegex('/^' . $pattern . '/imxsu')];
+                        } elseif (fnmatch('*LIKE*', $operand) && fnmatch('*NOT*', $operand)) {
+                            $pattern = str_replace('%', '.*', $value);
+                            $query = [
+                                $field => [
+                                    '$not' => new \MongoRegex('/^' . $pattern . '/imxsu')
+                                ]
+                            ];
+
+                        } elseif (fnmatch('*IN*', $operand) && !fnmatch('*NOT*', $operand)) {
+                            if (!Arrays::is($value)) {
+                                $value = str_replace('(', '', $value);
+                                $value = str_replace(')', '', $value);
+                                $value = str_replace(' ,', ',', $value);
+                                $value = str_replace(', ', ',', $value);
+
+                                $values = explode(',', $value);
+
+                                $t = [];
+
+                                foreach ($values as $v) {
+                                    $t[] = is_numeric($v) ? (int) $v : $v;
+                                }
+
+                                $value = $t;
+                            }
+
+                            $query = [$field => ['$in' => $value]];
+                        } elseif (fnmatch('*IN*', $operand) && fnmatch('*NOT*', $operand)) {
+                            if (!Arrays::is($value)) {
+                                $value = str_replace('(', '', $value);
+                                $value = str_replace(')', '', $value);
+                                $value = str_replace(' ,', ',', $value);
+                                $value = str_replace(', ', ',', $value);
+
+                                $values = explode(',', $value);
+
+                                $t = [];
+
+                                foreach ($values as $v) {
+                                    $t[] = is_numeric($v) ? (int) $v : $v;
+                                }
+
+                                $value = $t;
+                            }
+
+                            $query = [$field => ['$nin' => $value]];
+                        }
+                    }
+
+                    if (true === $addFilter) {
+                        if ('&&' == $op || 'AND' == $op) {
+                            array_push($filter['$and'], $query);
+                        } elseif ('||' == $op || 'OR' == $op) {
+                            array_push($filter['$or'], $query);
+                        }
+                    }
+                }
+            }
+
+            if (empty($filter['$and'])) {
+                unset($filter['$and']);
+            } else {
+                $filter['$or'][] = ['$and' => $filter['$and']];
+                unset($filter['$and']);
+            }
+
+            if (empty($filter['$or'])) {
+                unset($filter['$or']);
+            }
+
+            return $filter;
+        }
+
         public function exec($object = false, $count = false, $first = false)
         {
             $collection = [];
@@ -603,6 +784,26 @@
                                 } elseif ('WHERE' == $operand) {
                                     $filter['$where'] = $value;
                                     $addFilter = false;
+                                } elseif ('MOD' == $operand) {
+                                    $divisor    = current($value);
+                                    $remainder  = end($value);
+                                    $query      = [$field => ['$mod' => [(int) $divisor, (int) $remainder]]];
+                                } elseif ('CENTER' == $operand) {
+                                    $longitude  = current($value);
+                                    $latitude   = $value[1];
+                                    $radius     = end($value);
+                                    $query      = [$field => ['$geoWithin' => ['$center' => [[$longitude, $latitude], $radius]]]];
+                                } elseif ('CENTERSPHERE' == $operand) {
+                                    $longitude  = current($value);
+                                    $latitude   = $value[1];
+                                    $radius     = end($value);
+                                    $query      = [$field => ['$geoWithin' => ['$centerSphere' => [[$longitude, $latitude], $radius]]]];
+                                } elseif ('BOX' == $operand) {
+                                    $left   = current($value);
+                                    $right  = end($value);
+                                    $query  = [$field => ['$geoWithin' => ['$box' => [$left, $right]]]];
+                                } elseif ('POLYGON' == $operand) {
+                                    $query  = [$field => ['$geoWithin' => ['$polygon' => $value]]];
                                 }
                             }
                         }
@@ -2576,9 +2777,9 @@
 
             $fk = $tableFk . '_id';
 
-            $coll->ensureIndex(['id' => 1]);
+            $coll->ensureIndex([$fk => 1]);
 
-            $results = new Cursor($coll->find($query, ['id' => true]));
+            $results = new Cursor($coll->find($query, [$fk => true]));
 
             if ($results->count() == 0) {
                 return $this->none();
@@ -2587,10 +2788,10 @@
             $ids = [];
 
             foreach ($results as $row) {
-                $ids[] = $row['id'];
+                $ids[] = $row[$fk];
             }
 
-            return $this->where(['id', 'IN', implode(',', $ids)]);
+            return $this->where([$fk, 'IN', implode(',', $ids)]);
         }
 
         public function rql($query)
@@ -2997,7 +3198,96 @@
 
         public function backup()
         {
-            $cmd = 'mongodump --db zelift -u zelift_master --password zelift2014 -o /tmp';
-            exec($cmd);
+            set_time_limit(0);
+
+            $now = time();
+            $next = time() + 900; /* Toutes les 15 minutes */
+
+            $collection = [];
+
+            $db = $this->getOdm();
+
+            $backup = Keep::Backup();
+
+            $collections = $db->getCollectionNames();
+
+            foreach ($collections as $coll) {
+                list($collDb, $collTable) = explode('.', $coll, 2);
+                $row = $backup->where(['collection', '=', $coll])->first(true);
+
+                if (!$row) {
+                    $row = $backup->firstOrCreate([
+                        'collection' => $coll
+                    ])->setNext($now)->save();
+                }
+
+                if ($now > $row->next) {
+                    $datas = $db->selectCollection($coll)->find();
+
+                    if (!empty($datas)) {
+                        $file = STORAGE_PATH . DS . 'backup' . DS . str_replace('.', '_', $coll) . '.php';
+                        File::delete($file);
+                        File::put($file, '<?php' . "\n" . '$datas = [];' . "\n");
+
+                        foreach ($datas as $data) {
+                            unset($data['_id']);
+                            $json = json_encode($data);
+                            File::append($file, '$datas[] = ' . var_export($data, 1) . ';' . "\n");
+                        }
+
+                        File::append($file, 'return $datas;');
+
+                        $row->setNext($next)->save();
+                    }
+                }
+            }
+        }
+
+        public function restore()
+        {
+            set_time_limit(0);
+
+            $files = glob(STORAGE_PATH . DS . 'backup' . DS . '*.php', GLOB_NOSORT);
+
+            foreach ($files as $file) {
+                $seg                = str_replace('.php', '', Arrays::last(explode('/', $file)));
+                list($db, $table)   = explode('_', $seg, 2);
+
+                $datas = include($file);
+
+                if (!empty($datas)) {
+                    $first  = current($datas);
+                    $id     = isAke($first, 'id', false);
+
+                    if (false !== $id) {
+                        $i = self::instance($db, $table);
+
+                        foreach ($datas as $row) {
+                            $obj = $i->model($row);
+
+                            $obj->restore();
+                        }
+                    }
+                }
+            }
+
+            dd("restore finished");
+        }
+
+        public function native($query = [], $select = [])
+        {
+            $db     = $this->cnx->selectDB(SITE_NAME);
+            $coll   = $db->selectCollection($this->collection);
+
+            $coll->ensureIndex(['id' => 1]);
+
+            $query = $this->prepare($query);
+
+            return new Cursor($coll->find($query, $select), $this);
+        }
+
+        public function orm()
+        {
+            return new Orm($this);
         }
     }
