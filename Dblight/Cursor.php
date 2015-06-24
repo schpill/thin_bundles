@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Dblight;
 
     class Cursor implements \Iterator, \Countable
@@ -222,5 +233,20 @@
             $id = isAke($row, 'id', false);
 
             return false !== $id ? $this->db->model($row) : false;
+        }
+
+        public function first($object = false)
+        {
+            $row = $this->current();
+
+            $this->rewind();
+
+            $id = isAke($row, 'id', false);
+
+            if (!$id) {
+                return null;
+            }
+
+            return $object ? $this->db->model($row) : $row;
         }
     }

@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Dbjson;
 
     use \Dbjson\Dbjson as Database;
@@ -131,7 +142,9 @@
 
         public function hashFile($file, $create = true)
         {
-            list($prefix, $suffix) = explode('/Web/DB/zelift/dbjson', $this->model->dir, 2);
+            list($prefix, $suffix) = explode('/zelift/dbjson', $this->model->dir, 2);
+
+            $suffix = str_replace('_production', '_development', $suffix);
 
             $hashDir = '/home/gerald/hubic/Web/DB/zelift/dbjson' . $suffix;
 

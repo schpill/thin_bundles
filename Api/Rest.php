@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Api;
 
     use Thin\Request;
@@ -27,9 +38,9 @@
             $controller = $tab[1];
             $action     = $tab[2];
 
-            $tab = array_slice($tab, 3);
+            $tab        = array_slice($tab, 3);
 
-            $count = count($tab);
+            $count      = count($tab);
 
             if (0 < $count && $count % 2 == 0) {
                 for ($i = 0; $i < $count; $i += 2) {
@@ -58,7 +69,7 @@
             }
 
             if (Arrays::in('init', $methods)) {
-                $i->init();
+                $i->init($call);
             }
 
             $i->$call();

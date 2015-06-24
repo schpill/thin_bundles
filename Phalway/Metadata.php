@@ -1,12 +1,16 @@
 <?php
-    namespace Phalway;
-
     /**
-     * author: Gérald Plusquellec
-     * date: 20/11/2014
-     * subject: a brief phalcon abstraction
+     * Thin is a swift Framework for PHP 5.4+
      *
-     **/
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
+    namespace Phalway;
 
     use Phalcon\Db\Column;
     use Phalcon\DiInterface;

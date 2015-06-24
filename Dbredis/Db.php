@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Dbredis;
 
     use Thin\Alias;
@@ -11,12 +22,14 @@
     use Thin\Inflector;
     use Thin\Container;
     use Thin\Keep;
+    use Thin\Light;
+    use Thin\Timer;
     use MongoBinData;
     use MongoClient as MGC;
 
     class Db
     {
-        public $db, $table, $collection, $results, $cnx, $limit, $offset;
+        public $db, $table, $collection, $results, $cnx, $limit, $offset, $cacheClient;
         public $wheres          = [];
         public $selects         = [];
         public $orders          = [];
@@ -37,21 +50,24 @@
             $this->table        = $table;
             $this->collection   = "$db.$table";
 
-            $host               = Conf::get('mongo.host', '127.0.0.1');
-            $port               = Conf::get('mongo.port', 27017);
-            $protocol           = Conf::get('mongo.protocol', 'mongodb');
-            $auth               = Conf::get('mongo.auth', true);
+            if (empty($config)) {
+                $host               = Conf::get('mongo.host', '127.0.0.1');
+                $port               = Conf::get('mongo.port', 27017);
+                $protocol           = Conf::get('mongo.protocol', 'mongodb');
+                $auth               = Conf::get('mongo.auth', true);
 
-            if (true === $auth) {
-                $user           = Conf::get('mongo.username', SITE_NAME . '_master');
-                $password       = Conf::get('mongo.password');
+                if (true === $auth) {
+                    $user           = Conf::get('mongo.username', SITE_NAME . '_master');
+                    $password       = Conf::get('mongo.password');
 
-                $this->connect($protocol, $user, $password, $host, $port);
-            } else {
-                $this->cnx      = new MGC($protocol . '://' . $host . ':' . $port, ['connect' => true]);
+                    $this->connect($protocol, $user, $password, $host, $port);
+                } else {
+                    $this->cnx      = new MGC($protocol . '://' . $host . ':' . $port, ['connect' => true]);
+                }
             }
 
             $this->getAge();
+            $this->model()->checkIndices();
         }
 
         private function connect($protocol, $user, $password, $host, $port, $incr = 0)
@@ -108,20 +124,28 @@
         {
             $coll = $this->getCollection($this->db . '.ages');
 
-            return $coll->insert(['table' => $this->table, 'age' => $age]);
+            return $coll->insert([
+                'table' => $this->table,
+                'age' => $age
+            ]);
         }
 
         private function delAge()
         {
             $coll = $this->getCollection($this->db . '.ages');
 
-            return $coll->remove(['table' => $this->table], ["justOne" => true]);
+            return $coll->remove(
+                ['table' => $this->table],
+                ["justOne" => true]
+            );
         }
 
         private function retrieveAge()
         {
             $coll   = $this->getCollection($this->db . '.ages');
-            $row    = $coll->findOne(['table' => $this->table]);
+            $row    = $coll->findOne([
+                'table' => $this->table
+            ]);
 
             if ($row) {
                 return isAke($row, 'age', null);
@@ -297,14 +321,14 @@
             $data['id'] = $id;
 
             if (!isset($data['created_at'])) {
-                $data['created_at'] = time();
+                $data['created_at'] = (int) time();
             }
 
             if (!isset($data['updated_at'])) {
-                $data['updated_at'] = time();
+                $data['updated_at'] = (int) time();
             }
 
-            $row = $db->insert($data);
+            $row = $db->insert($this->analyze($data));
 
             unset($data['_id']);
 
@@ -312,7 +336,28 @@
 
             $this->setAge();
 
+            redis()->set('must.backup', 1);
+
             return $this->model($data);
+        }
+
+        private function analyze(array $data)
+        {
+            $clean = [];
+
+            foreach ($data as $k => $v) {
+                if (is_numeric($v) && !fnmatch('*phone*', $k) && !fnmatch('*zip*', $k) && !fnmatch('*cellular*', $k) && $k != 'phone' && $k != 'zip' && $k != 'siret' && $k != 'cellular') {
+                    if (fnmatch('*.*', $v) || fnmatch('*,*', $v)) {
+                        $v = (float) $v;
+                    } else {
+                        $v = new \MongoInt32($v);
+                    }
+                }
+
+                $clean[$k] = $v;
+            }
+
+            return $clean;
         }
 
         public function bulk(array $datas, $checkTuple = false)
@@ -344,7 +389,9 @@
                 $data['updated_at'] = time();
             }
 
-            $row = $db->insert($data);
+            $row = $db->insert($this->analyze($data));
+
+            redis()->set('must.backup', 1);
 
             return $this->model($data);
         }
@@ -404,10 +451,16 @@
                 $row = $db->update(['id' => $id], ['$set' => $new]);
 
                 foreach ($unset as $fu) {
-                    $row = $db->update(['id' => $id], ['$unset' => [$fu => '']]);
+                    $row = $db->update(
+                        ['id' => $id],
+                        ['$unset' => [$fu => '']]
+                    );
                 }
             } else {
-                $row = $db->update(['id' => $id], ['$set' => $new]);
+                $row = $db->update(
+                    ['id' => $id],
+                    ['$set' => $this->analyze($new)]
+                );
             }
 
             unset($data['_id']);
@@ -421,7 +474,13 @@
         {
             $db = $this->getCollection();
 
-            $db->update($query, ['$set' => $update], ['multi' => true]);
+            $db->update(
+                $query,
+                ['$set' => $update],
+                ['multi' => true]
+            );
+
+            redis()->set('must.backup', 1);
 
             return $this;
         }
@@ -431,6 +490,8 @@
             $db = $this->getCollection();
 
             $db->remove($query);
+
+            redis()->set('must.backup', 1);
 
             return $this;
         }
@@ -444,6 +505,8 @@
             $this->delTuple($id);
 
             $this->setAge();
+
+            redis()->set('must.backup', 1);
 
             return true;
         }
@@ -488,11 +551,12 @@
             }
         }
 
-        public function getHash($object = false, $count = false, $first = false)
+        public function getHash($object = false, $count = false, $first = false, $huge = false)
         {
-            $object = !$object ? 'false' : 'true';
-            $count  = !$count ? 'false' : 'true';
-            $first  = !$first ? 'false' : 'true';
+            $object = !$object  ? 'false' : 'true';
+            $count  = !$count   ? 'false' : 'true';
+            $first  = !$first   ? 'false' : 'true';
+            $huge   = !$huge    ? 'false' : 'true';
 
             return sha1(
                 serialize($this->selects) .
@@ -503,11 +567,12 @@
                 $this->limit .
                 $count .
                 $first .
+                $huge .
                 $object
             );
         }
 
-        public function prepare(array $q)
+        public function prepare(array $q, $res = false)
         {
             $filter = ['$or' => [], '$and' => []];
 
@@ -515,13 +580,25 @@
                 foreach ($q as $wh) {
                     $addFilter = true;
 
-                    if (4 == count($wh)) {
-                        list($field, $operand, $value, $op) = $wh;
+                    if ($res) {
+                        list($field, $operand, $value) = current($wh);
                         $condition = [$field, $operand, $value];
-                    } elseif (3 == count($wh)) {
-                        $op = 'AND';
-                        list($field, $operand, $value) = $wh;
-                        $condition = [$field, $operand, $value];
+                        $op = end($wh);
+
+                        if ($op == '&&') {
+                            $op = 'AND';
+                        } elseif ($op == '||') {
+                            $op = 'OR';
+                        }
+                    } else {
+                        if (4 == count($wh)) {
+                            list($field, $operand, $value, $op) = $wh;
+                            $condition = [$field, $operand, $value];
+                        } elseif (3 == count($wh)) {
+                            $op = 'AND';
+                            list($field, $operand, $value) = $wh;
+                            $condition = [$field, $operand, $value];
+                        }
                     }
 
                     if (is_string($condition)) {
@@ -532,8 +609,8 @@
                         list($field, $operand, $value) = $condition;
                     } elseif (count($condition) == 1) {
                         $operand    = '=';
-                        $field      = Arrays::first(array_keys($condition));
-                        $value      = Arrays::first(array_values($condition));
+                        $field      = current(array_keys($condition));
+                        $value      = current(array_values($condition));
                     }
 
                     if (!fnmatch('*LIKE*', $operand) && !fnmatch('*IN*', $operand)) {
@@ -601,6 +678,10 @@
                                     $latitude   = $value[1];
                                     $radius     = end($value);
                                     $query      = [$field => ['$geoWithin' => ['$centerSphere' => [[$longitude, $latitude], $radius]]]];
+                                } elseif ('BETWEEN' == $operand) {
+                                    $min    = current($value);
+                                    $max    = end($value);
+                                    $query  = [$field => ['$gt' => $min, '$lt' => $max]];
                                 } elseif ('BOX' == $operand) {
                                     $left   = current($value);
                                     $right  = end($value);
@@ -623,7 +704,7 @@
                             ];
 
                         } elseif (fnmatch('*IN*', $operand) && !fnmatch('*NOT*', $operand)) {
-                            if (!Arrays::is($value)) {
+                            if (!is_array($value)) {
                                 $value = str_replace('(', '', $value);
                                 $value = str_replace(')', '', $value);
                                 $value = str_replace(' ,', ',', $value);
@@ -642,7 +723,7 @@
 
                             $query = [$field => ['$in' => $value]];
                         } elseif (fnmatch('*IN*', $operand) && fnmatch('*NOT*', $operand)) {
-                            if (!Arrays::is($value)) {
+                            if (!is_array($value)) {
                                 $value = str_replace('(', '', $value);
                                 $value = str_replace(')', '', $value);
                                 $value = str_replace(' ,', ',', $value);
@@ -676,8 +757,20 @@
             if (empty($filter['$and'])) {
                 unset($filter['$and']);
             } else {
-                $filter['$or'][] = ['$and' => $filter['$and']];
-                unset($filter['$and']);
+                if (empty($filter['$or'])) {
+                    $newfilter = [];
+
+                    foreach ($filter['$and'] as $rowFilter) {
+                        foreach ($rowFilter as $k => $v) {
+                            $newfilter[$k] = $v;
+                        }
+                    }
+
+                    return $newfilter;
+                } else {
+                    $filter['$or'][] = ['$and' => $filter['$and']];
+                    unset($filter['$and']);
+                }
             }
 
             if (empty($filter['$or'])) {
@@ -687,15 +780,383 @@
             return $filter;
         }
 
-        public function exec($object = false, $count = false, $first = false)
+        public function _exec($object = false, $count = false, $first = false)
         {
-            $collection = [];
+            $hash = $this->getHash($object, $count, $first);
+
+            return lib('utils')->until('exec.' . $hash, function ($self, $object, $count, $first) {
+                $collection = [];
+
+                $self->model()->checkIndices();
+
+                $filter = ['$or' => [], '$and' => []];
+
+                if (!empty($self->wheres)) {
+                    foreach ($self->wheres as $wh) {
+                        $addFilter = true;
+
+                        list($condition, $op) = $wh;
+
+                        if (is_string($condition)) {
+                            $condition = $self->normalizeCondition($condition);
+                        }
+
+                        if (count($condition) == 3) {
+                            list($field, $operand, $value) = $condition;
+                        } elseif (count($condition) == 1) {
+                            $operand    = '=';
+                            $field      = current(array_keys($condition));
+                            $value      = current(array_values($condition));
+                        }
+
+                        if (!fnmatch('*LIKE*', $operand) && !fnmatch('*IN*', $operand)) {
+                            if (fnmatch('IS*', $operand)) {
+                                if (!fnmatch('*NOT', $operand)) {
+                                    $query = [$field => null];
+                                } else {
+                                    $query = [$field => ['$ne' => null]];
+                                }
+                            } else {
+                                $dbOperand = $self->getDbOperand($operand);
+
+                                if (is_string($dbOperand)) {
+                                    if (fnmatch('*t*', $dbOperand)) {
+                                        $value = !fnmatch('*.*', $value) && !fnmatch('*.*', $value) ? (int) $value : (float) $value;
+                                    }
+
+                                    $query = [$field => [$dbOperand => $value]];
+                                } else {
+                                    if ('=' == $operand) {
+                                        $query = [$field => $value];
+                                    } elseif ('=i' == $operand) {
+                                        $query = [$field => new \MongoRegex('/^' . $value . '$/i')];
+                                    } elseif ('EXISTS' == $operand) {
+                                        if (!is_bool($value)) {
+                                            $value = 'true' ? true : false;
+                                        }
+
+                                        $query = [$field => ['$exists' => $value]];
+                                    } elseif ('ALL' == $operand && is_array($value)) {
+                                        $query = [$field => ['$all' => array_values($value)]];
+                                    } elseif ('SIZE' == $operand) {
+                                        $query = [$field => ['$size' => $value]];
+                                    } elseif ('TYPE' == $operand) {
+                                        $query = [$field => ['$type' => $self->resolveType($value)]];
+                                    } elseif ('WORD' == $operand) {
+                                        $filter['$text'] = ['$search' => $value];
+                                        $addFilter = false;
+                                    } elseif ('WORDS' == $operand) {
+                                        $filter['$text'] = ['$search' => "\"$value\""];
+                                        $addFilter = false;
+                                    } elseif ('SENTENCE' == $operand) {
+                                        $filter['$text'] = ['$search' => "\"$value\""];
+                                        $addFilter = false;
+                                    } elseif ('NOR' == $operand) {
+                                        $filter['$nor'] = $value;
+                                        $addFilter = false;
+                                    } elseif ('NOT' == $operand) {
+                                        $filter['$not'] = $value;
+                                        $addFilter = false;
+                                    } elseif ('WHERE' == $operand) {
+                                        $filter['$where'] = $value;
+                                        $addFilter = false;
+                                    } elseif ('MOD' == $operand) {
+                                        $divisor    = current($value);
+                                        $remainder  = end($value);
+                                        $query      = [$field => ['$mod' => [(int) $divisor, (int) $remainder]]];
+                                    } elseif ('CENTER' == $operand) {
+                                        $longitude  = current($value);
+                                        $latitude   = $value[1];
+                                        $radius     = end($value);
+                                        $query      = [$field => ['$geoWithin' => ['$center' => [[$longitude, $latitude], $radius]]]];
+                                    } elseif ('CENTERSPHERE' == $operand) {
+                                        $longitude  = current($value);
+                                        $latitude   = $value[1];
+                                        $radius     = end($value);
+                                        $query      = [$field => ['$geoWithin' => ['$centerSphere' => [[$longitude, $latitude], $radius]]]];
+                                    } elseif ('BETWEEN' == $operand) {
+                                        $min    = current($value);
+                                        $max    = end($value);
+                                        $query  = [$field => ['$gt' => $min, '$lt' => $max]];
+                                    } elseif ('BOX' == $operand) {
+                                        $left   = current($value);
+                                        $right  = end($value);
+                                        $query  = [$field => ['$geoWithin' => ['$box' => [$left, $right]]]];
+                                    } elseif ('POLYGON' == $operand) {
+                                        $query  = [$field => ['$geoWithin' => ['$polygon' => $value]]];
+                                    }
+                                }
+                            }
+                        } else {
+                            if (fnmatch('*LIKE*', $operand) && !fnmatch('*NOT*', $operand)) {
+                                $pattern = str_replace('%', '.*', $value);
+                                $query = [$field => new \MongoRegex('/^' . $pattern . '/imxsu')];
+                            } elseif (fnmatch('*LIKE*', $operand) && fnmatch('*NOT*', $operand)) {
+                                $pattern = str_replace('%', '.*', $value);
+                                $query = [
+                                    $field => [
+                                        '$not' => new \MongoRegex('/^' . $pattern . '/imxsu')
+                                    ]
+                                ];
+
+                            } elseif (fnmatch('*IN*', $operand) && !fnmatch('*NOT*', $operand)) {
+                                if (!is_array($value)) {
+                                    $value = str_replace('(', '', $value);
+                                    $value = str_replace(')', '', $value);
+                                    $value = str_replace(' ,', ',', $value);
+                                    $value = str_replace(', ', ',', $value);
+
+                                    $values = explode(',', $value);
+
+                                    $t = [];
+
+                                    foreach ($values as $v) {
+                                        $t[] = is_numeric($v) ? (int) $v : $v;
+                                    }
+
+                                    $value = $t;
+                                }
+
+                                $query = [$field => ['$in' => $value]];
+                            } elseif (fnmatch('*IN*', $operand) && fnmatch('*NOT*', $operand)) {
+                                if (!is_array($value)) {
+                                    $value = str_replace('(', '', $value);
+                                    $value = str_replace(')', '', $value);
+                                    $value = str_replace(' ,', ',', $value);
+                                    $value = str_replace(', ', ',', $value);
+
+                                    $values = explode(',', $value);
+
+                                    $t = [];
+
+                                    foreach ($values as $v) {
+                                        $t[] = is_numeric($v) ? (int) $v : $v;
+                                    }
+
+                                    $value = $t;
+                                }
+
+                                $query = [$field => ['$nin' => $value]];
+                            }
+                        }
+
+                        if (true === $addFilter) {
+                            if ('&&' == $op) {
+                                array_push($filter['$and'], $query);
+                            } elseif ('||' == $op) {
+                                array_push($filter['$or'], $query);
+                            }
+                        }
+                    }
+                }
+
+                if (empty($filter['$and'])) {
+                    unset($filter['$and']);
+                } else {
+                    $filter['$or'][] = ['$and' => $filter['$and']];
+                    unset($filter['$and']);
+                }
+
+                if (empty($filter['$or'])) {
+                    unset($filter['$or']);
+                }
+
+                $db = $self->getCollection();
+                $db->ensureIndex(['id' => 1]);
+
+                if (empty($self->selects)) {
+                    $results = new Cursor($db->find($filter));
+                } else {
+                    $fields = [];
+
+                    foreach ($self->selects as $f) {
+                        $fields[$f] = true;
+                    }
+
+                    $hasId = isAke($fields, 'id', false);
+
+                    if (false === $hasId) {
+                        $fields['id'] = true;
+                    }
+
+                    $results = new Cursor($db->find($filter, $fields));
+                }
+
+                if (true === $count) {
+                    return $results->count();
+                }
+
+                if (!empty($self->orders)) {
+                    $results = $results->sort($self->orders);
+                }
+
+                if (isset($self->offset)) {
+                    $results = $results->skip($self->offset);
+                }
+
+                if (isset($self->limit)) {
+                    $results = $results->limit($self->limit);
+                }
+
+                if (true === $first) {
+                    $item = [];
+
+                    if (!empty($results)) {
+                        foreach ($results as $row) {
+                            unset($row['_id']);
+                            $exists = isAke($row, 'id', false);
+
+                            if (false === $exists) {
+                                continue;
+                            }
+
+                            $item = $row;
+                            break;
+                        }
+                    }
+
+                    return $item;
+                }
+
+                if (!empty($self->groupBys)) {
+                    foreach ($self->groupBys as $fieldGB) {
+                        $groupByTab = [];
+                        $ever       = [];
+
+                        foreach ($results as $tab) {
+                            $exists = isAke($tab, 'id', false);
+
+                            if (false === $exists) {
+                                continue;
+                            }
+
+                            $obj = isAke($tab, $fieldGB, null);
+
+                            if (!in_array($obj, $ever)) {
+                                $groupByTab[]   = $tab;
+                                $ever[]         = $obj;
+                            }
+                        }
+
+                        $results = count($groupByTab) > 1 ? $self->_order($field, 'ASC', $groupByTab) : $groupByTab;
+                    }
+                }
+
+                if (!empty($self->joinTables)) {
+                    $joinCollection = [];
+
+                    foreach ($self->wheres as $wh) {
+                        list($condition, $op) = $wh;
+                        list($field, $operand, $value) = $condition;
+
+                        if (fnmatch('*.*', $field)) {
+                            if (fnmatch('*.*.*', $field)) {
+                                list($fKDb, $fkTable, $fkField) = explode('.', $field, 3);
+                            } else {
+                                list($fkTable, $fkField) = explode('.', $field, 2);
+                                $fKDb = $self->db;
+                            }
+
+                            $joinField = $self->joinTables[$field];
+
+                            foreach ($results as $tab) {
+                                $exists = isAke($tab, 'id', false);
+
+                                if (false === $exists) {
+                                    continue;
+                                }
+
+                                $joinFieldValue = isAke($tab, $joinField, false);
+
+                                if (false !== $joinFieldValue) {
+                                    $fkRow = Db::instance($fkTable, $fKDb)->find($joinFieldValue);
+
+                                    if ($fkRow) {
+                                        $fkTab = $fkRow->assoc();
+                                        $fkFieldValue = isAke($fkTab, $fkField, false);
+
+                                        if (false !== $fkFieldValue) {
+                                            if (is_array($fkFieldValue)) {
+                                                if ($operand != '!=' && $operand != '<>' && !fnmatch('*NOT*', $operand)) {
+                                                    $check = in_array($value, $fkFieldValue);
+                                                } else {
+                                                    $check = !in_array($value, $fkFieldValue);
+                                                }
+                                            } else {
+                                                if (strlen($fkFieldValue)) {
+                                                    if ($value == 'null') {
+                                                        $check = false;
+
+                                                        if ($operand == 'IS' || $operand == '=') {
+                                                            $check = false;
+                                                        } elseif ($operand == 'ISNOT' || $operand == '!=' || $operand == '<>') {
+                                                            $check = true;
+                                                        }
+                                                    } else {
+                                                        $fkFieldValue   = str_replace('|', ' ', $fkFieldValue);
+                                                        $check          = $self->compare($fkFieldValue, $operand, $value);
+                                                    }
+                                                } else {
+                                                    $check = false;
+
+                                                    if ($value == 'null') {
+                                                        if ($operand == 'IS' || $operand == '=') {
+                                                            $check = true;
+                                                        } elseif ($operand == 'ISNOT' || $operand == '!=' || $operand == '<>') {
+                                                            $check = false;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (true === $check) {
+                                                array_push($joinCollection, $tab);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    $results = $joinCollection;
+                }
+
+                if (!empty($results)) {
+                    foreach ($results as $row) {
+                        unset($row['_id']);
+                        $exists = isAke($row, 'id', false);
+
+                        if (false === $exists) {
+                            continue;
+                        }
+
+                        $item = true === $object ? $self->model($row) : $row;
+
+                        array_push($collection, $item);
+                    }
+                }
+
+                $self->reset();
+
+                return true === $object ? new Collection($collection) : $collection;
+            }, $this->getAge(), [$this, $object, $count, $first]);
+        }
+
+        public function huge($object = false, $count = false, $first = false)
+        {
+            return $this->exec($object, $count, $first, true);
+        }
+
+        public function exec($object = false, $count = false, $first = false, $huge = false)
+        {
+            $collection = $huge ? new Huge($this) : [];
 
             $hash = $this->getHash($object, $count, $first);
 
-            if (true === $this->useCache && false === $object) {
-                $keyData    = 'rdb.exec.data.' . $this->collection . '.' . $hash;
-                $keyAge     = 'rdb.exec.age.' . $this->collection . '.' . $hash;
+            if (true === $this->useCache) {
+                $keyData    = 'dbr.exec.data.' . $this->collection . '.' . $hash;
+                $keyAge     = 'dbr.exec.age.' . $this->collection . '.' . $hash;
 
                 $ageDb      = $this->getAge();
                 $ageQuery   = $this->cache()->get($keyAge);
@@ -706,7 +1167,7 @@
 
                         $this->reset();
 
-                        return $collection;
+                        return true === $object ? new Collection($this->makeModels($collection)) : $collection;
                     }
                 }
             }
@@ -729,8 +1190,8 @@
                         list($field, $operand, $value) = $condition;
                     } elseif (count($condition) == 1) {
                         $operand    = '=';
-                        $field      = Arrays::first(array_keys($condition));
-                        $value      = Arrays::first(array_values($condition));
+                        $field      = current(array_keys($condition));
+                        $value      = current(array_values($condition));
                     }
 
                     if (!fnmatch('*LIKE*', $operand) && !fnmatch('*IN*', $operand)) {
@@ -802,6 +1263,10 @@
                                     $left   = current($value);
                                     $right  = end($value);
                                     $query  = [$field => ['$geoWithin' => ['$box' => [$left, $right]]]];
+                                } elseif ('BETWEEN' == $operand) {
+                                    $min    = current($value);
+                                    $max    = end($value);
+                                    $query  = [$field => ['$gt' => $min, '$lt' => $max]];
                                 } elseif ('POLYGON' == $operand) {
                                     $query  = [$field => ['$geoWithin' => ['$polygon' => $value]]];
                                 }
@@ -820,7 +1285,7 @@
                             ];
 
                         } elseif (fnmatch('*IN*', $operand) && !fnmatch('*NOT*', $operand)) {
-                            if (!Arrays::is($value)) {
+                            if (!is_array($value)) {
                                 $value = str_replace('(', '', $value);
                                 $value = str_replace(')', '', $value);
                                 $value = str_replace(' ,', ',', $value);
@@ -839,7 +1304,7 @@
 
                             $query = [$field => ['$in' => $value]];
                         } elseif (fnmatch('*IN*', $operand) && fnmatch('*NOT*', $operand)) {
-                            if (!Arrays::is($value)) {
+                            if (!is_array($value)) {
                                 $value = str_replace('(', '', $value);
                                 $value = str_replace(')', '', $value);
                                 $value = str_replace(' ,', ',', $value);
@@ -962,7 +1427,7 @@
 
                         $obj = isAke($tab, $fieldGB, null);
 
-                        if (!Arrays::in($obj, $ever)) {
+                        if (!in_array($obj, $ever)) {
                             $groupByTab[]   = $tab;
                             $ever[]         = $obj;
                         }
@@ -1006,11 +1471,11 @@
                                     $fkFieldValue = isAke($fkTab, $fkField, false);
 
                                     if (false !== $fkFieldValue) {
-                                        if (Arrays::is($fkFieldValue)) {
+                                        if (is_array($fkFieldValue)) {
                                             if ($operand != '!=' && $operand != '<>' && !fnmatch('*NOT*', $operand)) {
-                                                $check = Arrays::in($value, $fkFieldValue);
+                                                $check = in_array($value, $fkFieldValue);
                                             } else {
-                                                $check = !Arrays::in($value, $fkFieldValue);
+                                                $check = !in_array($value, $fkFieldValue);
                                             }
                                         } else {
                                             if (strlen($fkFieldValue)) {
@@ -1053,28 +1518,64 @@
             }
 
             if (!empty($results)) {
+                $ind = 0;
+
                 foreach ($results as $row) {
                     unset($row['_id']);
+                    $row    = $this->cleanInt($row);
                     $exists = isAke($row, 'id', false);
 
                     if (false === $exists) {
                         continue;
                     }
 
-                    $item = true === $object ? $this->model($row) : $row;
-
-                    array_push($collection, $item);
+                    if (is_array($collection)) {
+                        $collection[] = $row;
+                    } else {
+                        $collection->push($ind, $row);
+                        $ind++;
+                    }
                 }
             }
 
-            if (true === $this->useCache && false === $object) {
+            if (true === $this->useCache) {
                 $this->cache()->set($keyData, serialize($collection));
                 $this->cache()->set($keyAge, time());
             }
 
             $this->reset();
 
-            return true === $object ? new Collection($collection) : $collection;
+            return true === $object ? new Collection($this->makeModels($collection)) : $collection;
+        }
+
+        public function makeModels($rows)
+        {
+            $collection = [];
+
+            foreach ($rows as $row) {
+                $collection[] = $this->model($row);
+            }
+
+            return $collection;
+        }
+
+        private function cleanInt($row)
+        {
+            $newrow = [];
+
+            foreach ($row as $k => $v) {
+                if (is_numeric($v)) {
+                    if (!fnmatch('*.*', $v) && !fnmatch('*,*', $v)) {
+                        $v = (int) $v;
+                    } else {
+                        $v = (double) $v;
+                    }
+                }
+
+                $newrow[$k] = $v;
+            }
+
+            return $newrow;
         }
 
         private function compare($comp, $op, $value)
@@ -1152,7 +1653,7 @@
                         $value      = str_replace('(', '', $value);
                         $value      = str_replace(')', '', $value);
                         $tabValues  = explode(',', $value);
-                        $res        = Arrays::in($comp, $tabValues);
+                        $res        = in_array($comp, $tabValues);
 
                         break;
 
@@ -1160,7 +1661,7 @@
                         $value      = str_replace('(', '', $value);
                         $value      = str_replace(')', '', $value);
                         $tabValues  = explode(',', $value);
-                        $res        = !Arrays::in($comp, $tabValues);
+                        $res        = !in_array($comp, $tabValues);
 
                         break;
                 }
@@ -1213,7 +1714,7 @@
                 };
             };
 
-            if (Arrays::is($fieldOrder) && !Arrays::is($orderDirection)) {
+            if (is_array($fieldOrder) && !is_array($orderDirection)) {
                 $t = [];
 
                 foreach ($fieldOrder as $tmpField) {
@@ -1223,11 +1724,11 @@
                 $orderDirection = $t;
             }
 
-            if (!Arrays::is($fieldOrder) && Arrays::is($orderDirection)) {
-                $orderDirection = Arrays::first($orderDirection);
+            if (!is_array($fieldOrder) && is_array($orderDirection)) {
+                $orderDirection = current($orderDirection);
             }
 
-            if (Arrays::is($fieldOrder) && Arrays::is($orderDirection)) {
+            if (is_array($fieldOrder) && is_array($orderDirection)) {
                 for ($i = 0 ; $i < count($fieldOrder) ; $i++) {
                     usort($results, $sortFunc($fieldOrder[$i], $orderDirection[$i]));
                 }
@@ -1323,7 +1824,7 @@
 
             if (!$check) {
                 if (!empty($condition)) {
-                    if (!Arrays::is($condition)) {
+                    if (!is_array($condition)) {
                         $condition  = str_replace(
                             [' LIKE START ', ' LIKE END ', ' NOT LIKE ', ' NOT IN '],
                             [' LIKESTART ', ' LIKEEND ', ' NOTLIKE ', ' NOTIN '],
@@ -1806,9 +2307,9 @@
                     $this->where([$key, '=', $value]);
                 }
 
-                $first = $this->first(true);
+                $first = $this->cursor()->first(true);
 
-                if (!is_null($first)) {
+                if ($first) {
                     return $first;
                 }
             }
@@ -1845,31 +2346,62 @@
             return $this;
         }
 
-        public function only($field)
+        public function only($field, $default = null)
         {
             $row = $this->first(true);
 
-            return $row instanceof Model ? $row->$field : null;
+            return $row instanceof Model ? $row->$field : $default;
+        }
+
+        public function destroy($what)
+        {
+            /* polymorphism */
+            if (func_num_args() == 1) {
+                if (is_string($what)) {
+                    if (fnmatch('*,*', $what)) {
+                        $what = str_replace(' ', '', $what);
+                        $what = explode(',', $what);
+                    }
+                }
+            } else {
+                $what = func_get_args();
+            }
+
+            if (is_array($what)) {
+                foreach ($what as $seg) {
+                    $obj = $this->find((int) $seg);
+
+                    if ($obj) {
+                        $obj->delete();
+                    }
+                }
+            }
+
+            return $this;
         }
 
         public function select($what)
         {
             /* polymorphism */
-            if (is_string($what)) {
-                if (fnmatch('*,*', $what)) {
-                    $what = str_replace(' ', '', $what);
-                    $what = explode(',', $what);
+            if (func_num_args() == 1) {
+                if (is_string($what)) {
+                    if (fnmatch('*,*', $what)) {
+                        $what = str_replace(' ', '', $what);
+                        $what = explode(',', $what);
+                    }
                 }
+            } else {
+                $what = func_get_args();
             }
 
-            if (Arrays::is($what)) {
+            if (is_array($what)) {
                 foreach ($what as $seg) {
-                    if (!Arrays::in($seg, $this->selects)) {
+                    if (!in_array($seg, $this->selects)) {
                         $this->selects[] = $seg;
                     }
                 }
             } else {
-                if (!Arrays::in($what, $this->selects)) {
+                if (!in_array($what, $this->selects)) {
                     $this->selects[] = $what;
                 }
             }
@@ -1912,9 +2444,9 @@
             }
 
             if (true === $object) {
-                return !empty($res) ? $this->model(Arrays::last($res)) : null;
+                return !empty($res) ? $this->model(end($res)) : null;
             } else {
-                return !empty($res) ? Arrays::last($res) : [];
+                return !empty($res) ? end($res) : [];
             }
         }
 
@@ -1937,7 +2469,7 @@
             $res = $this->where([$field, '=', $value])->exec();
 
             if (!empty($res) && true === $one) {
-                return $object ? $this->model(Arrays::first($res)) : Arrays::first($res);
+                return $object ? $this->model(current($res)) : current($res);
             }
 
             if (!empty($res) && true === $one && true === $object) {
@@ -2011,7 +2543,7 @@
         public function in($ids, $field = null, $op = 'AND', $results = [])
         {
             /* polymorphism */
-            $ids = !Arrays::is($ids)
+            $ids = !is_array($ids)
             ? strstr($ids, ',')
                 ? explode(',', str_replace(' ', '', $ids))
                 : [$ids]
@@ -2025,7 +2557,7 @@
         public function notIn($ids, $field = null, $op = 'AND', $results = [])
         {
             /* polymorphism */
-            $ids = !Arrays::is($ids)
+            $ids = !is_array($ids)
             ? strstr($ids, ',')
                 ? explode(',', str_replace(' ', '', $ids))
                 : [$ids]
@@ -2169,6 +2701,7 @@
         private function tuple($tuple)
         {
             $tupler = $this->getCollection($this->db . '.tuples');
+            $tupler->ensureIndex(['table' => 1]);
 
             $has = $tupler->findOne(['table' => $this->table, 'key' => $tuple]);
 
@@ -2189,6 +2722,7 @@
         private function delTuple($id)
         {
             $tupler = $this->getCollection($this->db . '.tuples');
+            $tupler->ensureIndex(['table' => 1]);
 
             return $tupler->remove(['table' => $this->table, 'table_id' => $id], ["justOne" => true]);
         }
@@ -2211,15 +2745,32 @@
 
         public function cache()
         {
-            return Caching::instanceDb($this->collection);
+            if (is_null($this->clientCache)) {
+                $this->clientCache =  lib('redys', [$this->collection]);
+            }
+
+            return $this->clientCache;
+        }
+
+        public function clearCache()
+        {
+            $keys = $this->cache()->keys('*');
+
+            if (!empty($keys)) {
+                foreach ($keys as $key) {
+                    $this->cache()->del(str_replace($this->collection . '.', '', $key));
+                }
+            }
+
+            return $this;
         }
 
         public function getCache($ns = null)
         {
             if (is_null($ns)) {
-                return Caching::instanceDb($this->collection);
+                return lib('redys', [$this->collection]);
             } else {
-                return Caching::instance($ns);
+                return lib('redys', [$ns]);
             }
         }
 
@@ -2256,7 +2807,7 @@
                         $obj = true;
                     }
 
-                    return $this->where([$object, '=', Arrays::first($args)])->last($obj);
+                    return $this->where([$object, '=', current($args)])->last($obj);
                 }
             }
 
@@ -2271,7 +2822,7 @@
                         $obj = true;
                     }
 
-                    return $this->findFirstBy($object, Arrays::first($args), $obj);
+                    return $this->findFirstBy($object, current($args), $obj);
                 }
             }
 
@@ -2286,7 +2837,7 @@
                         $obj = false;
                     }
 
-                    return $this->findOneBy($object, Arrays::first($args), $obj);
+                    return $this->findOneBy($object, current($args), $obj);
                 }
             }
 
@@ -2297,18 +2848,18 @@
                 if ('orderBy' == $method) {
                     $fields = $this->fieldsRow();
 
-                    if (!Arrays::in($object, $fields) && 'id' != $object) {
-                        $object = Arrays::in($object . '_id', $fields) ? $object . '_id' : $object;
+                    if (!in_array($object, $fields) && 'id' != $object) {
+                        $object = in_array($object . '_id', $fields) ? $object . '_id' : $object;
                     }
 
-                    $direction = !empty($args) ? Arrays::first($args) : 'ASC';
+                    $direction = !empty($args) ? current($args) : 'ASC';
 
                     return $this->order($object, $direction);
                 } elseif ('groupBy' == $method) {
                     $fields = $this->fieldsRow();
 
-                    if (!Arrays::in($object, $fields)) {
-                        $object = Arrays::in($object . '_id', $fields) ? $object . '_id' : $object;
+                    if (!in_array($object, $fields)) {
+                        $object = in_array($object . '_id', $fields) ? $object . '_id' : $object;
                     }
 
                     return $this->groupBy($object);
@@ -2320,7 +2871,7 @@
 
             if (strlen($fn) > strlen('where')) {
                 if ('where' == $method) {
-                    return $this->where([$object, '=', Arrays::first($args)]);
+                    return $this->where([$object, '=', current($args)]);
                 }
             }
 
@@ -2331,11 +2882,11 @@
                 if ('sortBy' == $method) {
                     $fields = $this->fieldsRow();
 
-                    if (!Arrays::in($object, $fields) && 'id' != $object) {
-                        $object = Arrays::in($object . '_id', $fields) ? $object . '_id' : $object;
+                    if (!in_array($object, $fields) && 'id' != $object) {
+                        $object = in_array($object . '_id', $fields) ? $object . '_id' : $object;
                     }
 
-                    $direction = !empty($args) ? Arrays::first($args) : 'ASC';
+                    $direction = !empty($args) ? current($args) : 'ASC';
 
                     return $this->order($object, $direction);
                 } elseif ('findBy' == $method) {
@@ -2345,7 +2896,7 @@
                         $obj = false;
                     }
 
-                    return $this->findBy($object, Arrays::first($args), false, $obj);
+                    return $this->findBy($object, current($args), false, $obj);
                 }
             }
 
@@ -2376,7 +2927,7 @@
             $time = microtime();
             $time = explode(' ', $time, 2);
 
-            return Arrays::last($time) + Arrays::first($time);
+            return end($time) + current($time);
         }
 
         public function lock($action = 'write')
@@ -2417,7 +2968,7 @@
 
             $fieldJoin = is_null($fieldJoin) ? $model . '_id' : $fieldJoin;
 
-            if (!Arrays::in($fieldJoin, $fields)) {
+            if (!in_array($fieldJoin, $fields)) {
                 throw new Exception("'$fieldJoin' unknown in $this->table model. This join is not possible.");
             }
 
@@ -2533,7 +3084,44 @@
         {
             $db = $this->getCollection();
 
+            $odm = $this->getOdm($this->db);
+
+            $counter    = $odm->selectCollection($this->db . '.counters');
+            $tupler     = $odm->selectCollection($this->db . '.tuples');
+            $ager       = $odm->selectCollection($this->db . '.ages');
+
+            $counter->remove(['table' => $this->table], ["justOne" => true]);
+            $ager->remove(['table' => $this->table], ["justOne" => true]);
+            $tupler->remove(['table' => $this->table]);
+
             $db->drop();
+
+            return $this;
+        }
+
+        public function flush()
+        {
+            $db = $this->getCollection();
+
+            $odm = $this->getOdm($this->db);
+
+            $counter    = $odm->selectCollection($this->db . '.counters');
+            $tupler     = $odm->selectCollection($this->db . '.tuples');
+            $ager       = $odm->selectCollection($this->db . '.ages');
+
+            $counter->remove(['table' => $this->table], ["justOne" => true]);
+            $tupler->remove(['table' => $this->table]);
+
+            $db->remove(['id' => ['$gt' => 0]]);
+
+            return $this->refresh();
+        }
+
+        public function refresh()
+        {
+            $ager = $this->getCollection($this->db . '.ages');
+
+            $ager->update(['table' => $this->table], ['$set' => ['age' => time()]]);
 
             return $this;
         }
@@ -2590,6 +3178,62 @@
             return $db->selectCollection($commandResults['result'])->find($queryOut);
         }
 
+        public function aggregate($op, $field)
+        {
+            set_time_limit(0);
+
+            $ops = [
+                [
+                    '$group' => [
+                        "_id" => ["_id" => '$' . $this->collection],
+                        "$op" => ['$' . $op => '$' . $field],
+                    ],
+                ]
+            ];
+
+            $results = $this->getCollection()->aggregate($ops);
+
+            $result = isake($results, 'result', []);
+
+            if (!empty($result)) {
+                $row = current($result);
+
+                $val = isAke($row, $op, false);
+
+                if (false !== $val) {
+                    return $val;
+                }
+            }
+
+            return null;
+        }
+
+        public function groupByField($field)
+        {
+            set_time_limit(0);
+
+            $ops = [
+                [
+                    '$group'    => [
+                        "_id"   => [$field => '$' . $field],
+                        "count" => ['$sum' => 1],
+                    ],
+                ]
+            ];
+
+            $results = $this->getCollection()->aggregate($ops);
+
+            $results =  isAke($results, 'result', []);
+
+            $collection = [];
+
+            foreach ($results as $result) {
+                $collection[] = ['reseller_id' => current($result['_id']), 'count' => $result['count']];
+            }
+
+            return $collection;
+        }
+
         public function foreign($collection, $condition)
         {
             $db         = $this->cnx->selectDB(SITE_NAME);
@@ -2600,7 +3244,7 @@
 
             $fk = $tableFk . '_id';
 
-            if (!Arrays::is($condition)) {
+            if (!is_array($condition)) {
                 $condition  = str_replace(
                     [' LIKE START ', ' LIKE END ', ' NOT LIKE ', ' NOT IN '],
                     [' LIKESTART ', ' LIKEEND ', ' NOTLIKE ', ' NOTIN '],
@@ -2686,7 +3330,7 @@
                     ];
 
                 } elseif (fnmatch('*IN*', $operand) && !fnmatch('*NOT*', $operand)) {
-                    if (!Arrays::is($value)) {
+                    if (!is_array($value)) {
                         $value = str_replace('(', '', $value);
                         $value = str_replace(')', '', $value);
                         $value = str_replace(' ,', ',', $value);
@@ -2705,7 +3349,7 @@
 
                     $query = [$field => ['$in' => $value]];
                 } elseif (fnmatch('*IN*', $operand) && fnmatch('*NOT*', $operand)) {
-                    if (!Arrays::is($value)) {
+                    if (!is_array($value)) {
                         $value = str_replace('(', '', $value);
                         $value = str_replace(')', '', $value);
                         $value = str_replace(' ,', ',', $value);
@@ -3042,18 +3686,22 @@
             }
         }
 
+        public function take($what, $where = null, $object = false)
+        {
+            return with(new Take($this))->take($what, $where, $object);
+        }
+
         public function with($what, $object = false)
         {
             $collection = $ids = $foreigns = $foreignsCo = [];
 
             if (is_string($what)) {
                 if (fnmatch('*,*', $what)) {
-                    $what = str_replace(' ', '', $what);
-                    $what = explode(',', $what);
+                    $what = explode(',', str_replace(' ', '', $what));
                 }
 
                 $res = $this->exec($object);
-            } elseif (Arrays::is($what)) {
+            } elseif (is_array($what)) {
                 foreach ($what as $key => $closure) {
                     $what = $key;
 
@@ -3082,11 +3730,11 @@
                         $value = isAke($row, $what . '_id', false);
 
                         if (false !== $value) {
-                            if (!Arrays::in($value, $ids)) {
+                            if (!in_array($value, $ids)) {
                                 array_push($ids, $value);
                             }
                         }
-                    } elseif (Arrays::is($what)) {
+                    } elseif (is_array($what)) {
                         foreach ($what as $fk) {
                             if (!isset($ids[$fk])) {
                                 $ids[$fk] = [];
@@ -3095,7 +3743,7 @@
                             $value = isAke($row, $fk . '_id', false);
 
                             if (false !== $value) {
-                                if (!Arrays::in($value, $ids[$fk])) {
+                                if (!in_array($value, $ids[$fk])) {
                                     array_push($ids[$fk], $value);
                                 }
                             }
@@ -3111,11 +3759,11 @@
 
                         if (!empty($foreigns)) {
                             foreach ($foreigns as $foreign) {
-                                $id = $object ? $foreign->id : $foreign['id'];
+                                $id = $object ? (int) $foreign->id : (int) $foreign['id'];
                                 $foreignsCo[$id] = $foreign;
                             }
                         }
-                    } elseif (Arrays::is($what)) {
+                    } elseif (is_array($what)) {
                         foreach ($what as $fk) {
                             $idsFk = $ids[$fk];
 
@@ -3138,22 +3786,42 @@
 
                             foreach ($res as $r) {
                                 if (is_object($r)) {
-                                    $r->$what = $foreignsCo[$r->$whatId];
+                                    if (isset($r->$whatId)) {
+                                        if (isset($foreignsCo[$r->$whatId])) {
+                                            $r->$what = $foreignsCo[$r->$whatId];
+                                        }
+                                    }
                                 } else {
-                                    $r[$what] = $foreignsCo[$r[$whatId]];
+                                    if (isset($r[$whatId])) {
+                                        if (isset($foreignsCo[$r[$whatId]])) {
+                                            $r[$what] = $foreignsCo[$r[$whatId]];
+                                        }
+                                    }
                                 }
 
                                 array_push($collection, $r);
                             }
-                        } elseif (Arrays::is($what)) {
+                        } elseif (is_array($what)) {
                             foreach ($res as $r) {
                                 foreach ($what as $fk) {
                                     $fkId = $fk . '_id';
 
                                     if (is_object($r)) {
-                                        $r->$fk = $foreignsCo[$fk][$r->$fkId];
+                                        if (isset($r->$fkId)) {
+                                            if (isset($foreignsCo[$fk])) {
+                                                if (isset($foreignsCo[$fk][$r->$fkId])) {
+                                                    $r->$fk = $foreignsCo[$fk][$r->$fkId];
+                                                }
+                                            }
+                                        }
                                     } else {
-                                        $r[$fk] = $foreignsCo[$fk][$r[$fkId]];
+                                        if (isset($r[$fkId])) {
+                                            if (isset($foreignsCo[$fk])) {
+                                                if (isset($foreignsCo[$fk][$r[$fkId]])) {
+                                                    $r[$fk] = $foreignsCo[$fk][$r[$fkId]];
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 
@@ -3180,7 +3848,9 @@
         public function multiQuery(array $queries)
         {
             foreach ($queries as $query) {
-                switch (count($query)) {
+                $count = count($query);
+
+                switch ($count) {
                     case 4:
                         list($field, $op, $value, $operand) = $query;
                         break;
@@ -3196,23 +3866,38 @@
             return $this;
         }
 
-        public function backup()
+        public function backup($database = null)
         {
             set_time_limit(0);
 
-            $now = time();
-            $next = time() + 900; /* Toutes les 15 minutes */
+            $database = is_null($database) ? SITE_NAME : $database;
+
+            $path = STORAGE_PATH . DS . 'backup';
+
+            if (!is_dir($path)) {
+                File::mkdir($path);
+            }
+
+            $now    = time();
+            $next   = $now + 900; /* Toutes les 15 minutes */
 
             $collection = [];
 
             $db = $this->getOdm();
 
-            $backup = Keep::Backup();
+            $backup = Light::Backup();
 
             $collections = $db->getCollectionNames();
 
+            $save = false;
+
             foreach ($collections as $coll) {
                 list($collDb, $collTable) = explode('.', $coll, 2);
+
+                if ($collDb != $database) {
+                    continue;
+                }
+
                 $row = $backup->where(['collection', '=', $coll])->first(true);
 
                 if (!$row) {
@@ -3238,20 +3923,35 @@
                         File::append($file, 'return $datas;');
 
                         $row->setNext($next)->save();
+
+                        $save = true;
                     }
                 }
             }
+
+            if (true === $save) {
+                $cmd = "cd /tmp && zip -r backup_database_" . date('Ymd-His') . ".zip " . $path;
+                exec($cmd);
+            }
+
+            dd(Timer::get());
         }
 
-        public function restore()
+        public function restore($database = null)
         {
             set_time_limit(0);
+
+            $database = is_null($database) ? SITE_NAME : $database;
 
             $files = glob(STORAGE_PATH . DS . 'backup' . DS . '*.php', GLOB_NOSORT);
 
             foreach ($files as $file) {
-                $seg                = str_replace('.php', '', Arrays::last(explode('/', $file)));
+                $seg                = str_replace('.php', '', end(explode('/', $file)));
                 list($db, $table)   = explode('_', $seg, 2);
+
+                if ($db != $database) {
+                    continue;
+                }
 
                 $datas = include($file);
 
@@ -3271,7 +3971,7 @@
                 }
             }
 
-            dd("restore finished");
+            dd(Timer::get());
         }
 
         public function native($query = [], $select = [])
@@ -3289,5 +3989,283 @@
         public function orm()
         {
             return new Orm($this);
+        }
+
+        public function seeds($database = null)
+        {
+            set_time_limit(0);
+
+            $database = is_null($database) ? SITE_NAME : $database;
+
+            $path = STORAGE_PATH . DS . 'seeds';
+
+            if (!is_dir($path)) {
+                File::mkdir($path);
+            }
+
+            $now    = time();
+
+            $db = $this->getOdm();
+
+            $backup = self::instance('core', 'backup');
+
+            $collections = $db->getCollectionNames();
+
+            $key = array_search('zelift.ages', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.counters', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.tuples', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.caching', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.ages', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            foreach ($collections as $coll) {
+                list($collDb, $collTable) = explode('.', $coll, 2);
+
+                if ($collDb != $database) {
+                    continue;
+                }
+
+                $row = $backup->where(['collection', '=', $coll])->first(true);
+
+                if (!$row) {
+                    $row = $backup->firstOrCreate([
+                        'collection' => $coll
+                    ])->setWhen($now)->save();
+                }
+
+                $file = STORAGE_PATH . DS . 'seeds' . DS . str_replace('.', '_', $coll) . '.php';
+
+                $model = self::instance($collDb, $collTable);
+
+                $last = $model->where(['id', '>', 0])->select('updated_at')->order('updated_at', 'DESC')->first(true);
+
+                if ($last) {
+                    if ($last->updated_at > $row->when || !File::exists($file)) {
+                        if (!File::exists($file)) {
+                            $datas = $model->select('id')->get();
+                        } else {
+                            $datas = $model->where(['updated_at', '>=', (int) $now])->select('id')->get();
+                            File::delete($file);
+                        }
+
+                        if (!empty($datas)) {
+                            File::put($file, '<?php' . "\nnamespace Thin;\n\n");
+
+                            $code = '';
+                            $code .= '$db = rdb("' . $collDb . '", "' . $collTable . '");' . "\n\n\n";
+
+                            File::append($file, $code);
+
+                            foreach ($datas as $rowData) {
+                                $data = $model->find((int) $rowData['id'], false);
+
+                                $codeRow = '// *** ligne ' . $data['id'] . ' ***' . "\n";
+                                $codeRow .= '$row = $db->find(' . $data['id'] . ');' . "\n\n";
+                                $codeRow .= 'if (!$row) {' . "\n";
+                                $codeRow .= "\t" . '$row = $db->addWithId(["id" => ' . $data['id'] . ']);' . "\n";
+                                $codeRow .= '}' . "\n\n";
+
+                                unset($data['id']);
+
+                                $codeRow .= '$data = ' . var_export($data, 1) . ';' . "\n";
+                                $codeRow .= '$row->hydrate($data)->save();' . "\n";
+                                $codeRow .= '// *** fin ligne ' . $data['id'] . ' ***' . "\n\n";
+
+                                File::append($file, $codeRow);
+                            }
+
+                            $row->setWhen($now)->save();
+                        }
+                    }
+                }
+            }
+
+            dd(Timer::get());
+        }
+
+        public function makeBackup($database = null)
+        {
+            set_time_limit(0);
+
+            $database = is_null($database) ? SITE_NAME : $database;
+
+            $db = $this->getOdm();
+
+            $collections = $db->getCollectionNames();
+
+            $key = array_search('zelift.ages', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.counters', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.tuples', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.caching', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.ages', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $i = 0;
+
+            foreach ($collections as $coll) {
+                $path = \Thin\Config::get('application.backup_dir');
+
+                if (!is_dir($path)) {
+                    return false;
+                }
+
+                list($collDb, $collTable) = explode('.', $coll, 2);
+
+                if ($collDb != $database) {
+                    continue;
+                }
+
+                $path = $path . DS . $collDb;
+
+                if (!is_dir($path)) {
+                    File::mkdir($path);
+                }
+
+                $path = $path . DS . $collTable;
+
+                if (!is_dir($path)) {
+                    File::mkdir($path);
+                }
+
+                $model = self::instance($collDb, $collTable);
+
+                $cursor = $model->cursor();
+
+                while ($row = $cursor->fetch()) {
+                    if (isset($row['id'])) {
+                        $file = $path . DS . $row['id'] . '.json';
+                        File::put($file, json_encode($row));
+                        $i++;
+                    }
+                }
+            }
+
+            $now = date("d_m_Y_H_i_s");
+
+            $path = \Thin\Config::get('application.backup_dir', false);
+            $user = \Thin\Config::get('redis.ftp.backup.user', false);
+            $password = \Thin\Config::get('redis.ftp.backup.password', false);
+            $host = \Thin\Config::get('redis.ftp.backup.host', false);
+
+            if (false !== $path && false !== $user && false !== $password && false !== $host) {
+                $cmd = "cd $path && tar cfvz zelift_$now.tar.gz $path
+lftp -e 'put $path/zelift_$now.tar.gz; bye' -u \"$user\",$password $host
+rm zelift_$now.tar.gz
+echo 'done'";
+
+                passthru($cmd);
+            }
+
+            vd($i);
+            dd(Timer::get());
+        }
+
+        public function cursor()
+        {
+            return new Results($this);
+        }
+
+        public function listTables()
+        {
+            $db = $this->getOdm();
+
+            $collections = $db->getCollectionNames();
+
+            $key = array_search('zelift.ages', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.counters', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.tuples', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.caching', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $key = array_search('zelift.ages', $collections);
+
+            if (strlen($key)) {
+                unset($collections[$key]);
+            }
+
+            $zelift = [];
+
+            foreach ($collections as $coll) {
+                if (fnmatch(SITE_NAME . '.*', $coll)) {
+                    $zelift[] = $coll;
+                }
+            }
+
+            asort($zelift);
+
+            return array_values($zelift);
+        }
+
+        public function chain($tab)
+        {
+            foreach ($tab as $k => $v) {
+                $this->where([$k, '=', $v]);
+            }
+
+            return $this;
         }
     }

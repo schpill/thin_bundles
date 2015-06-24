@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Dblight;
 
     use Thin\Alias;
@@ -168,6 +179,10 @@
         {
             $datas = $this->motor()->read('datas.' . $id);
 
+            if (empty($datas)) {
+                return false;
+            }
+
             foreach ($datas as $k => $v) {
                 $this->motor()->remove('fields.' . $k . '.' . $id);
             }
@@ -300,7 +315,9 @@
                             }
                         }
 
-                        $this->motor()->write('wheres.' . $hash, $rows);
+                        if (!empty($rows)) {
+                            $this->motor()->write('wheres.' . $hash, $rows);
+                        }
 
                         if (true === $this->useCache) {
                             $this->cache()->set($keyData, serialize($rows));
@@ -349,7 +366,9 @@
                                 $this->results = $this->merge($this->results, $rows);
                             }
 
-                            $this->motor()->write('queries.' . $hashQuery, $this->results);
+                            if (!empty($this->results)) {
+                                $this->motor()->write('queries.' . $hashQuery, $this->results);
+                            }
 
                             if (true === $this->useCache) {
                                 $this->cache()->set($keyData, serialize($this->results));
@@ -418,6 +437,14 @@
 
         private function compare($comp, $op, $value)
         {
+            if (is_array($value)) {
+                if (is_array($comp)) {
+                    return sha1(serialize($value)) == sha1(serialize($comp));
+                } else {
+                    return false;
+                }
+            }
+
             $res = false;
 
             if (strlen($comp) && strlen($op) && strlen($value)) {
@@ -621,6 +648,10 @@
 
             $this->setAge();
 
+            if ($checkTuple) {
+                $this->addTuple($id, $keyTuple);
+            }
+
             return $this->find($id);
         }
 
@@ -771,7 +802,7 @@
                     $this->where([$key, '=', $value]);
                 }
 
-                $first = $this->first(true);
+                $first = $this->get()->first(true);
 
                 if (!is_null($first)) {
                     return $first;
@@ -831,9 +862,9 @@
             }
 
             if (true === $object) {
-                return !empty($res) ? $this->model(current($res)) : null;
+                return $res->count() > 0 ? $res->first(true) : null;
             } else {
-                return !empty($res) ? current($res) : [];
+                return $res->count() > 0 ? $res->first() : [];
             }
         }
 
@@ -985,6 +1016,11 @@
         }
 
         public function exec()
+        {
+            return new Iterator($this);
+        }
+
+        public function exec1()
         {
             return new Cursor($this);
         }

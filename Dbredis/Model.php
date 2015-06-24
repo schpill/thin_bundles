@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Dbredis;
 
     use Thin\Utils;
@@ -14,9 +25,28 @@
 
     class Model extends ArrayObject implements ArrayAccess, Countable, IteratorAggregate
     {
+        const TYPE_INT          = 1;
+        const TYPE_BOOL         = 2;
+        const TYPE_STRING       = 3;
+        const TYPE_FLOAT        = 4;
+        const TYPE_DATE         = 5;
+        const TYPE_HTML         = 6;
+        const TYPE_NOTHING      = 7;
+        const TYPE_SQL          = 8;
+        const TYPE_TIMESTAMP    = 9;
+        const TYPE_EMPTY        = 10;
+        const TYPE_TEXT         = 11;
+        const TYPE_OBJECT       = 12;
+        const TYPE_JSON         = 13;
+        const TYPE_CACHE        = 14;
+        const TYPE_TMP          = 15;
+        const TYPE_FOREIGN_KEY  = 16;
+        const TYPE_PRIMARY_KEY  = 17;
+        const TYPE_INDEX_KEY    = 18;
+
         public $_db, $_initial;
         public $_data = [];
-        private $_events = [];
+        public $_events = [];
         public $_hooks = [
             'beforeCreate'  => null,
             'beforeRead'    => null,
@@ -316,7 +346,6 @@
                         }
                     }
                 }
-
             } elseif (substr($func, 0, strlen('has')) == 'has') {
                 $uncamelizeMethod   = Inflector::uncamelize(lcfirst(substr($func, strlen('has'))));
                 $field              = Inflector::lower($uncamelizeMethod);
@@ -435,7 +464,7 @@
                             return $db->where([$idField, '=', $this->_data['id']])->exec($object);
                         }
                     } else {
-                        if (count($args)) {
+                        if (!empty($args)) {
                             $object = count($args) == 1 ? $args[0] : false;
                             $db = Db::instance($this->_db->db, $func);
 
@@ -462,6 +491,26 @@
             }
         }
 
+        public function glue($field)
+        {
+            $one = isAke($this->_data, $field . '_id', false);
+
+            if ($one) {
+                $data = Db::instance($this->_db->db, $field)->find((int) $one, false);
+                $this->_data[$field] = $data;
+            } else {
+                if ($field[strlen($field) - 1] == 's' && isset($this->_data['id']) && $field[0] != '_') {
+                    $db = Db::instance($this->_db->db, substr($field, 0, -1));
+
+                    $idField = $this->_db->table . '_id';
+
+                    $this->_data[$field] = $db->where([$idField, '=', (int) $this->_data['id']])->cursor()->toArray();
+                }
+            }
+
+            return $this;
+        }
+
         public function save()
         {
             $valid  = true;
@@ -479,11 +528,11 @@
             $hook = isAke($this->_hooks, 'validate', false);
 
             if ($hook) {
-                $valid = call_user_func_array($hook, [$this]);
+                $valid = call_user_func_array($hook, [$this->_data]);
             }
 
             if (true !== $valid) {
-                throw new Exception("Thos model must be valid to be saved.");
+                throw new Exception("This model must be valid to be saved.");
             }
 
             if ($id) {
@@ -510,6 +559,13 @@
             }
 
             return $row;
+        }
+
+        public function saveAndAttach($model, $atts = [])
+        {
+            $this->save();
+
+            return $this->attach($model, $atts);
         }
 
         public function restore()
@@ -593,6 +649,23 @@
             return false;
         }
 
+        function deleteCascade(array $fields)
+        {
+            foreach ($fields as $field) {
+                $val = isake($this->_data, $field, false);
+
+                if (fnmatch('*_id', $field) && false !== $val) {
+                    $row = bigDb(str_replace('_id', '', $field))->find($val);
+
+                    if ($row) {
+                        $row->delete();
+                    }
+                }
+            }
+
+            return $this->delete();
+        }
+
         public function hydrate(array $data = [])
         {
             $data = empty($data) ? $_POST : $data;
@@ -656,6 +729,16 @@
         public function toJson()
         {
             return json_encode($this->_data);
+        }
+
+        public function __tostring()
+        {
+            return json_encode($this->_data);
+        }
+
+        public function __invoke($json = false)
+        {
+            return $json ? $this->save()->toJson() : $this->save();
         }
 
         public function deleteSoft()
@@ -901,8 +984,146 @@
             return $model ? new self($this->_initial) : $this->_initial;
         }
 
+        public function cancel()
+        {
+            $this->_data = $this->_initial;
+
+            return $this;
+        }
+
         public function observer()
         {
             return new Observer($this);
+        }
+
+        public function getPivots($pivot)
+        {
+            return $this->getPivot($pivot, false);
+        }
+
+        public function getPivot($pivot, $first = true)
+        {
+            $res = call_user_func_array([lib('pivot'), 'retrieve'], [$this, $pivot]);
+
+            return $first ? $res->first() : array_values($res->toArray());
+        }
+
+        public function oneToOne($pivot)
+        {
+            return $this->getPivot($pivot);
+        }
+
+        public function belongsToOne($pivot)
+        {
+            return $this->getPivot($pivot);
+        }
+
+        public function belongsToMany($pivot)
+        {
+            return $this->getPivot($pivot, false);
+        }
+
+        public function manyToMany($pivot)
+        {
+            return $this->getPivot($pivot, false);
+        }
+
+        public function oneToMany($pivot)
+        {
+            return $this->getPivot($pivot, false);
+        }
+
+        public function take($fk)
+        {
+            if (!isset($this->_data['id'])) {
+                throw new Exception('id must be defined to use take.');
+            }
+
+            $db = fnmatch('*s', $fk) ? Db::instance($this->_db->db, substr($fk, 0, -1)) : Db::instance($this->_db->db, $fk);
+
+            return $db->where([$this->_db->table . '_id', '=', (int) $this->_data['id']]);
+        }
+
+        public function incr($key, $by = 1)
+        {
+            $oldVal = isset($this->$key) ? $this->$key : 0;
+            $newVal = $oldVal + $by;
+
+            $this->$key = $newVal;
+
+            return $this;
+        }
+
+        public function decr($key, $by = 1)
+        {
+            $oldVal = isset($this->$key) ? $this->$key : 1;
+            $newVal = $oldVal - $by;
+
+            $this->$key = $newVal;
+
+            return $this;
+        }
+
+        public function through($t1, $t2)
+        {
+            $database = $this->_db->db;
+
+            $db1 = Db::instance($database, $t1);
+
+            $fk = $this->_db->table . '_id';
+
+            $sub = $db1->where([$fk, '=', (int) $this->_data['id']])->cursor();
+
+            $ids = [];
+
+            foreach ($sub as $row) {
+                $ids[] = $row['id'];
+            }
+
+            $fk2 = $t1 . '_id';
+
+            return Db::instance($database, $t2)->where([$fk2, 'IN', implode(',', $ids)])->cursor()->toArray();
+        }
+
+        public function hasThrough($t1, $t2)
+        {
+            $database = $this->_db->db;
+
+            $db1 = Db::instance($database, $t1);
+
+            $fk = $this->_db->table . '_id';
+
+            $sub = $db1->where([$fk, '=', (int) $this->_data['id']])->cursor();
+
+            $ids = [];
+
+            foreach ($sub as $row) {
+                $ids[] = $row['id'];
+            }
+
+            $fk2 = $t1 . '_id';
+
+            return Db::instance($database, $t2)->where([$fk2, 'IN', implode(',', $ids)])->cursor()->count() > 0 ? true : false;
+        }
+
+        public function countThrough($t1, $t2)
+        {
+            $database = $this->_db->db;
+
+            $db1 = Db::instance($database, $t1);
+
+            $fk = $this->_db->table . '_id';
+
+            $sub = $db1->where([$fk, '=', (int) $this->_data['id']])->cursor();
+
+            $ids = [];
+
+            foreach ($sub as $row) {
+                $ids[] = $row['id'];
+            }
+
+            $fk2 = $t1 . '_id';
+
+            return Db::instance($database, $t2)->where([$fk2, 'IN', implode(',', $ids)])->cursor()->count();
         }
     }

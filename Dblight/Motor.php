@@ -1,4 +1,15 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
+
     namespace Dblight;
 
     use Thin\Arrays;
@@ -61,10 +72,12 @@
         {
             $file = $this->getFile($name);
 
-            File::delete($file);
+            if (File::exists($file)) {
+                File::delete($file);
+            }
 
             $data = is_array($data) ? var_export($data, 1) : var_export([$data], 1);
-            File::put($file, "<?php\nreturn " . $data . ';');
+            $res = File::put($file, "<?php\nreturn " . $data . ';');
 
             return $this;
         }

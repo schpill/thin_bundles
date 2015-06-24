@@ -1,4 +1,14 @@
 <?php
+    /**
+     * Thin is a swift Framework for PHP 5.4+
+     *
+     * @package    Thin
+     * @version    1.0
+     * @author     Gerald Plusquellec
+     * @license    BSD License
+     * @copyright  1996 - 2015 Gerald Plusquellec
+     * @link       http://github.com/schpill/thin
+     */
 
     namespace Dbredis;
 
@@ -120,6 +130,26 @@
         }
 
         /**
+         * Return the result content as MongoDBREf objects.
+         *
+         * @return array array of mongo references
+         */
+        public function toRefArray()
+        {
+            // Retrieve the actual objects.
+            $documents = $this->toArray();
+
+            // Get the collection idenfitier
+            $collection = (string) $this->db->getCollection();
+
+            foreach ($documents as &$document) {
+                $document = \MongoDBRef::create($collection, $document);
+            }
+
+            return $documents;
+        }
+
+        /**
          * Original cursor method routing.
          *
          * @param string $method    method name
@@ -197,9 +227,9 @@
         {
             $cursor = $this->result;
 
-            $row = $cursor->current();
-
             $cursor->next();
+
+            $row = $cursor->current();
 
             unset($row['_id']);
 
@@ -210,9 +240,9 @@
         {
             $cursor = $this->result;
 
-            $row = $cursor->current();
-
             $cursor->next();
+
+            $row = $cursor->current();
 
             unset($row['_id']);
 
@@ -222,6 +252,8 @@
         public function first($object = false)
         {
             $cursor = $this->result;
+
+            $cursor->next();
 
             $row = $cursor->current();
 
